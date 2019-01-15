@@ -1,4 +1,3 @@
-# MetaSeq 16S Pipeline
+# airflow 16S Pipeline
 
-[pipeline]: blob/master/dag.svg
 
