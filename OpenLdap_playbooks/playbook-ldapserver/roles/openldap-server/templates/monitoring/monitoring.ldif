@@ -1,0 +1,16 @@
+# Configure LDAP monitoring capabilities
+
+# Loading monitor module
+dn: cn=module{3},cn=config
+objectClass: olcModuleList
+olcModulePath: {{ slapd_lib_path }}
+olcModuleLoad: {0}back_monitor
+
+# Creating monitor database
+dn: olcDatabase={2}Monitor,cn=config
+objectClass: olcDatabaseConfig
+objectClass: olcMonitorConfig
+olcDatabase: {2}Monitor
+olcAccess: {0}to dn.subtree="cn=Monitor" 
+ by dn.base="cn={{ slapd_monitoruser }},dc={{ slapd_domain_name.split('.')[0] }},dc={{ slapd_domain_name.split('.')[1] }}" read 
+ by * none

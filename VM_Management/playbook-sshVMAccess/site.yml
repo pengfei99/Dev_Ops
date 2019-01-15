@@ -1,0 +1,11 @@
+---
+# This playbook adds create a new user account on a centos 7 server.
+# Then add his public key as authorized_key
+- name: Create user and add his public key.
+  user: centos
+  hosts: test
+  become: yes
+  become_user: root
+  become_method: sudo
+  roles:
+     - ssh_access

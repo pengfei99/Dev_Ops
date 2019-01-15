@@ -1,0 +1,7 @@
+- name: Generate LDIF for etriks ldap default architecture.
+  template: src=roles/openldap-server/templates/architecture.ldif dest=/tmp/architecture.ldif
+  register: ldif_architecture
+  
+- name: Add architecture ldif into ldap server
+  when: ldif_architecture.changed
+  shell: ldapadd -x -D cn=admin,dc=etriks,dc=eu -w {{ slapd_adminpw }} -f {{ ldif_architecture.dest }}

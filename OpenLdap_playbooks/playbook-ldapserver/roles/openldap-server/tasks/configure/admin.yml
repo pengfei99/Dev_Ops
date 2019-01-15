@@ -1,0 +1,57 @@
+---
+# Configure admin user for the configuration (cn=config)
+- name: Generate the config user password
+  shell: slappasswd -s {{ slapd_configpw }} 
+  register: config_hashed_password
+  when: not slapd_facts.is_config_olcRootPW_set or slapd_config_fgenpw
+
+- name: Generate LDIF for config access configuration
+  template: src=roles/openldap-server/templates/admin/config.ldif dest=/tmp/
+  register: ldif_config_access
+  when: config_hashed_password.changed
+
+- name: Configure config access
+  shell: ldapmodify -Y EXTERNAL -H ldapi:/// -f {{ ldif_config_access.dest }}
+  when: ldif_config_access.changed
+  notify: restart slapd
+
+# Configure admin user for the database (dc=etriks,dc=eu for instance)
+- name: Generate the admin user password
+  shell: slappasswd -s {{ slapd_adminpw }} 
+  register: admin_hashed_password
+  when: not slapd_facts.is_admin_olcRootPW_set or slapd_admin_fgenpw
+
+- name: Generate LDIF for admin access configuration
+  template: src=roles/openldap-server/templates/admin/access.ldif dest=/tmp/
+  register: ldif_admin_access
+  when: admin_hashed_password.changed
+  
+- name: Configure admin access
+  shell: ldapmodify -Y EXTERNAL -H ldapi:/// -f {{ ldif_admin_access.dest }}
+  when: ldif_admin_access.changed
+  notify: restart slapd
+
+# Configure admin user organization (dc=etriks,dc=eu for instance)
+- name: Generate LDIF for admin organization creation
+  template: src=roles/openldap-server/templates/admin/org.ldif dest=/tmp/
+  register: ldif_admin_org
+  when: admin_hashed_password.changed #slapd_facts.is_admin_org_set
+
+- name: Create admin organization
+  shell: ldapadd -x -H ldap://{{ inventory_hostname }}/ \
+          -D cn={{ slapd_adminuser }},dc={{ slapd_domain_name.split('.')[0] }},dc={{ slapd_domain_name.split('.')[1] }} \
+          -w {{ slapd_adminpw }} -f {{ ldif_admin_org.dest }}
+  ignore_errors: True
+  when: ldif_admin_org.changed
+
+- name: Generate LDIF for admin user creation
+  template: src=roles/openldap-server/templates/admin/user.ldif dest=/tmp/
+  register: ldif_admin_user
+  when: admin_hashed_password.changed #slapd_facts.is_admin_user_set
+
+- name: Create admin user in its organization
+  shell: ldapadd -x -H ldap://{{ inventory_hostname }}/ \
+          -D cn={{ slapd_adminuser }},dc={{ slapd_domain_name.split('.')[0] }},dc={{ slapd_domain_name.split('.')[1] }} \
+          -w {{ slapd_adminpw }} -f {{ ldif_admin_user.dest }}
+  ignore_errors: True
+  when: ldif_admin_user.changed

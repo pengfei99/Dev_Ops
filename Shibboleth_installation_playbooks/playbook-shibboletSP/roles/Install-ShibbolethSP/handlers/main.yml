@@ -1,0 +1,4 @@
+---
+# Restart shibbolet daemon
+- name: restart shibd
+  service: name=shibd state=restarted enabled=yes

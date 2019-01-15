@@ -1,0 +1,16 @@
+
+
+---
+# This playbook installs a shibbolet SP on a centos based Os.
+# 
+
+- name: Install owncloud on centos7.
+  user: pliu
+  hosts: local
+  become: yes
+  become_user: root
+  become_method: sudo
+
+  roles:
+#     - Install-ShibbolethSP
+     - Configure-Apache

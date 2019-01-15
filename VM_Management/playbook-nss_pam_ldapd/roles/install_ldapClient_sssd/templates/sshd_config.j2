@@ -1,0 +1,35 @@
+AllowTcpForwarding yes
+ChallengeResponseAuthentication no
+ClientAliveCountMax 3
+ClientAliveInterval 0
+Compression yes
+GSSAPIAuthentication yes
+GSSAPICleanupCredentials yes
+HostbasedAuthentication no
+IgnoreUserKnownHosts no
+KeepAlive yes
+KerberosTicketCleanup yes
+MaxStartups 10
+PasswordAuthentication yes
+PermitEmptyPasswords no
+PermitRootLogin yes
+PermitUserEnvironment no
+PrintLastLog yes
+PrintMotd yes
+Protocol 2
+RSAAuthentication yes
+RhostsRSAAuthentication yes
+ServerKeyBits 768
+StrictModes yes
+Subsystem sftp /usr/libexec/openssh/sftp-server
+SyslogFacility AUTH
+TCPKeepAlive yes
+UseLogin no
+UsePAM yes
+UsePrivilegeSeparation yes
+X11DisplayOffset 10
+X11Forwarding yes
+X11UseLocalhost yes
+XAuthLocation /usr/bin/xauth
+AllowGroups root wheel UTEC06_Admin_System
+

@@ -1,0 +1,23 @@
+---
+
+- name: Create user account in centos
+  user: >
+     name={{ user_name }}
+     password={{ user_password }}
+  register: user_created
+
+
+- name: Add user public key as authorized_key in server
+  authorized_key: >
+     user={{user_name}}
+     key="{{ lookup('file', '{{user_key_path}}')}}"
+  when: user_created.changed
+
+- name: Grant user sudo rights if defined
+  user: >
+    name={{ user_name }}
+    group={{ sudo_group }}
+  when: sudo_right and user_created.changed
+
+# - debug: var={{ user_groups | join (',') }}
+#   when: user_groups is defined and

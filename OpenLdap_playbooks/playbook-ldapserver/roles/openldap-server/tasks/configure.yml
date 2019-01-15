@@ -1,0 +1,35 @@
+---
+# Gather slapd configuration state
+- name: Gather slapd configuration facts
+  action: slapd_facts.py \
+            admin_olcRootDN="cn={{ slapd_adminuser }},dc={{ slapd_domain_name.split('.')[0] }},dc={{ slapd_domain_name.split('.')[1] }}" \
+            admin_olcRootPW="{{ slapd_adminpw }}" \
+            config_olcRootDN="cn={{ slapd_configuser }},cn=config" \
+            config_olcRootPW="{{ slapd_configpw }}"
+  register: slapd_facts
+
+- name: DEBUG
+  debug: var=slapd_facts
+
+- name: Abort if slapd configuration state was not properly gathered
+  fail: msg="Couldn't gather the slapd configuration"
+  when: not slapd_facts.search_succeeded
+
+# Configure administrative access to the LDAP server.
+- include: configure/admin.yml
+
+# Configure TLS support if needed.
+- include: configure/tls.yml
+  when: slapd_tls_enabled
+
+# Configure index.
+- include: configure/index.yml
+
+# Configure overlays.
+- include: configure/overlays.yml
+
+# Configure logging.
+- include: configure/logging.yml
+
+# Configure monitoring
+- include: configure/monitoring.yml

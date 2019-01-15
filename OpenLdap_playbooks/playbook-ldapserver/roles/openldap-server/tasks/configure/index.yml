@@ -1,0 +1,10 @@
+---
+# Configure the LDAP backend database indexing capabilities
+- name: Generate LDIF for backend configuration
+  template: src=roles/openldap-server/templates/index.ldif dest=/tmp/
+  register: ldif_index
+  
+- name: Configure backend database index capabilities
+  shell: ldapmodify -Y EXTERNAL -H ldapi:/// -f {{ ldif_index.dest }}
+  when: ldif_index.changed
+  notify: restart slapd

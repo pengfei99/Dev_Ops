@@ -1,0 +1,12 @@
+# Configure the TLS support for the LDAP server
+dn: cn=config
+changetype: modify
+# Update necessary TLS certificate paths
+replace: olcTLSCACertificateFile
+olcTLSCACertificateFile: {{ slapd_app_path }}/ssl/{{ slapd_tls_cacert_file }}
+-
+replace: olcTLSCertificateFile
+olcTLSCertificateFile: {{ slapd_app_path }}/ssl/{{ slapd_tls_cert_file }}
+-
+replace: olcTLSCertificateKeyFile
+olcTLSCertificateKeyFile: {{ slapd_app_path }}/ssl/{{ slapd_tls_key_file }}

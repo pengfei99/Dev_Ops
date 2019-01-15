@@ -1,0 +1,18 @@
+---
+
+# ?!
+id: "_e805c6e3a443cb2d83267991e220482009591b17" # Can be changed
+entity_id: "https://pengfei.org/shibboleth"
+server_name: "pengfei.org" # As it appears in the certificate
+url: "http://pengfei.org"
+ssl_certificate: "" #Sp certficate
+ssl_key: ""   #sp private key which signed the sp certificate
+
+main_attribute: mail
+attributes_to_map: [ uid, cn, mail ]
+
+idp_entity_id: "https://auth.bioaster.org/idp/shibboleth"
+idp_url: "https://auth.bioaster.org:8443/idp"
+idp_certificate: "" 
+idp_domain: "bioaster.org"
+

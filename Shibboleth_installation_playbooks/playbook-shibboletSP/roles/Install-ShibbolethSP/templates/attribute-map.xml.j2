@@ -1,0 +1,7 @@
+<!-- This file permits to prepare the received attributes to be used by your web SP application. -->
+
+<Attributes xmlns="urn:mace:shibboleth:2.0:attribute-map" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+{% for attribute in attributes_to_map %}
+    <Attribute name="{{ attribute }}" id="{{ attribute }}" />
+{% endfor %}
+</Attributes>

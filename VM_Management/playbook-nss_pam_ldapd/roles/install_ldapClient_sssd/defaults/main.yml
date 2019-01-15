@@ -1,0 +1,26 @@
+---
+
+#Ldap server url
+ldap_url: auth-ldap.bioaster.org:389
+
+
+#Search base for user binding
+ldap_search_base: dc=bioaster,dc=org
+
+#Search base for user group
+ldap_group_search_base: dc=bioaster,dc=org
+
+#The LDAP schema defines the set of default attribute 
+#names retreived on the server as well as meaning of 
+#some of the attributes, notably membership attributes. 
+#The two most widely used schemas are rfc2307 and rfc2307bis 
+#with rfc2307 being the default. When using the rfc2307 schema, 
+#group members are listed by name in the memberUid attribute. 
+#When using the rfc2307bis schema, group members are listed by 
+#DN and stored in the member (or sometimes uniqueMember) attribute.
+
+#ldap schema
+ldap_schema: rfc2307
+
+#cert dir for start tls
+ldap_tls_cacerdir: /etc/openldap/cacerts

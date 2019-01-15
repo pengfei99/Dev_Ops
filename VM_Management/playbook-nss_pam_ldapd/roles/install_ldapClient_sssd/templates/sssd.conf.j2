@@ -1,0 +1,61 @@
+[domain/LDAP]
+##########Ldap basic connection config
+ldap_tls_reqcert = never
+enumerate = true
+auth_provider = ldap
+ldap_schema = {{ ldap_schema }}
+ldap_search_base = {{ ldap_search_base }}
+ldap_group_member = uniquemember
+id_provider = ldap
+ldap_id_use_start_tls = False
+chpass_provider = ldap
+ldap_uri = ldap://{{ ldap_url }}
+ldap_chpass_uri = ldap://{{ ldap_url }}
+cache_credentials = true
+ldap_tls_cacertdir = {{ ldap_tls_cacerdir }}
+entry_cache_timeout = 3
+
+########## Auto mount fs config#################
+#autofs_provider = ldap
+#ldap_autofs_search_base = dc=bioaster,dc=org
+#ldap_autofs_map_object_class = automountMap
+#ldap_autofs_map_name = ou
+#ldap_autofs_entry_object_class = automount
+#ldap_autofs_entry_key = cn
+#ldap_autofs_entry_value = automountInformation
+
+########### Sudo config###############
+
+#sudo_provider = ldap
+#ldap_sudo_search_base = ou=Sudoers,dc=bioaster,dc=org
+#ldap_sudo_full_refresh_interval=86400
+#ldap_sudo_smart_refresh_interval=3600
+
+############ ldap Group config ######
+ldap_group_object_class = posixGroup
+ldap_group_search_base = {{ ldap_group_search_base }}
+ldap_group_name = cn
+ldap_group_member = memberUid
+
+debug_level = 4
+
+
+
+[sssd]
+reconnection_retries=3
+config_file_version = 2
+services = nss, pam, sudo, ssh, autofs
+domains = LDAP
+
+[nss]
+filter_users = root,ldap,named,avahi,haldaemon,dbus,radiusd,news,nscd,slurm,munge
+[pam]
+reconnection_retries=3
+
+[sudo]
+
+[autofs]
+
+[ssh]
+
+[pac]

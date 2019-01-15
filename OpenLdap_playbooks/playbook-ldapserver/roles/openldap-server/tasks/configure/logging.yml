@@ -1,0 +1,24 @@
+---
+# Configure the logging functionalities of the LDAP server
+- name: Create log directory for slapd
+  file: path={{ slapd_log_dir }} state=directory
+        owner=syslog group=adm
+
+- name: Create rsyslog config file for slapd
+  template: src=roles/openldap-server/templates/logging/rsyslog.j2
+    dest=/etc/rsyslog.d/40-slapd.conf
+  notify: restart rsyslog
+  
+- name: Crate logrotate config file for slapd
+  template: src=roles/openldap-server/templates/logging/logrotate.j2
+    dest=/etc/logrotate.d/slapd
+  
+- name: Generate LDIF for LDAP event logging.
+  template: src=roles/openldap-server/templates/logging/logging.ldif
+    dest=/tmp/logging.ldif
+  register: ldif_logging
+
+- name: Configure LDAP event logging
+  shell: ldapmodify -Y EXTERNAL -H ldapi:/// -f {{ ldif_logging.dest }}
+  when: ldif_logging.changed
+  notify: restart slapd

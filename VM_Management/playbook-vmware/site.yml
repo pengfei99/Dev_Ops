@@ -1,0 +1,9 @@
+---
+# This playbook will create a new vm in vm ware cloud
+
+- name: Create vm in vmWare cloud
+  user: pliu
+  hosts: local
+
+  roles:
+     - create-vm

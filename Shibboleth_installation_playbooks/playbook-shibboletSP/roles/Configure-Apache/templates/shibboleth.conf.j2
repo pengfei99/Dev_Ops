@@ -1,0 +1,36 @@
+<VirtualHost *:80>
+    ServerName {{ vhost_name|default(inventory_hostname) }}
+    DocumentRoot /var/www/html
+    
+    #
+    # Ensures handler will be accessible.
+    #
+    <Location /Shibboleth.sso>
+      AuthType None
+      Require all granted
+    </Location>
+    
+    #
+    # Used for example style sheet in error templates.
+    #
+    <Location /shibboleth-sp>
+      AuthType None
+      Require all granted
+    </Location>
+    
+    Alias /shibboleth-sp/main.css /usr/share/shibboleth/main.css
+    
+    #
+    # Configure the module for content.
+    #
+    # You MUST enable AuthType shibboleth for the module to process
+    # any requests, and there MUST be a require command as well. To
+    # enable Shibboleth but not specify any session/access requirements
+    # use "require shibboleth".
+    #
+    <Location /secure>
+      AuthType shibboleth
+      ShibRequestSetting requireSession 1
+      require shib-session
+    </Location>
+</VirtualHost>

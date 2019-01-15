@@ -1,0 +1,9 @@
+---
+# This playbook will create a new vm in openstack cloud
+
+- name: Create vm in openstack cloud
+  user: root
+  hosts: ansible_master
+
+  roles:
+     - create-vm

@@ -1,0 +1,25 @@
+---
+
+- name: Back up default config file
+  command: "cp /etc/sysconfig/network-scripts/{{ item }} /tmp/{{ item }}.bkp"
+  with_items: 
+     - ifcfg-ens192
+  register: conf_bkp
+  
+- name: Update dns1 IP address
+  lineinfile: >
+      dest=/etc/sysconfig/network-scripts/ifcfg-ens192
+      regexp='^DNS1='
+      state=present
+      line='DNS1={{ dns1 }}'
+  when: conf_bkp.changed
+  
+- name: Update dns2 IP address
+  lineinfile: >
+      dest=/etc/sysconfig/network-scripts/ifcfg-ens192
+      regexp='^DNS2='
+      state=present
+      line='DNS2={{ dns2 }}'
+  notify: restart network
+  when: conf_bkp.changed
+ 

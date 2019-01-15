@@ -1,0 +1,73 @@
+---
+# Configure TLS support.
+
+# Get dependencies
+- name: Installing necessary packages for TLS certificates generation
+  apt: name={{ item }} state=present
+  with_items: slapd_tls_pkgs
+
+- name: Create the directory for TLS certificates
+  file: path={{ slapd_app_path }}/ssl/ state=directory 
+        owner={{ slapd_user }} group={{ slapd_group }}
+
+# ----------------------------------- #
+# Generate necessary TLS certificates #
+# ----------------------------------- #
+# Create Certification Authority key and certificate
+- name: Generate the private key for certificate authority
+  shell: certtool --generate-privkey --bits 2048 \
+                  --outfile {{ slapd_app_path }}/ssl/{{ slapd_tls_cakey_file }} 
+         creates={{ slapd_app_path }}/ssl/{{ slapd_tls_cakey_file }}
+
+- name: Generate certificate authority information file
+  template: src=roles/openldap-server/templates/tls/ca_info.cfg.j2
+            dest={{ slapd_app_path }}/ssl/ca_info.cfg
+  register: cainfo
+ 
+- name: Generate the self-signed authority certificate
+  shell: certtool --generate-self-signed \
+                  --load-privkey {{ slapd_app_path }}/ssl/{{ slapd_tls_cakey_file }} \
+                  --template {{ slapd_app_path }}/ssl/ca_info.cfg \
+                  --outfile {{ slapd_app_path }}/ssl/{{ slapd_tls_cacert_file }}
+  when: cainfo.changed
+
+# Create LDAP server key and certificate                  
+- name: Generate the private key for the LDAP server
+  shell: certtool --generate-privkey --bits 2048 \
+                  --outfile {{ slapd_app_path }}/ssl/{{ slapd_tls_key_file }}
+         creates={{ slapd_app_path }}/ssl/{{ slapd_tls_key_file }}
+         
+- name: Generate the LDAP server certificate information file
+  template: src=roles/openldap-server/templates/tls/ldap_info.cfg.j2
+            dest={{ slapd_app_path }}/ssl/ldap_info.cfg
+  register: ldapinfo
+              
+- name: Generate the LDAP server certificate
+  shell: certtool --generate-certificate \
+                  --load-privkey {{ slapd_app_path }}/ssl/{{ slapd_tls_key_file }} \
+                  --load-ca-certificate {{ slapd_app_path }}/ssl/{{ slapd_tls_cacert_file }} \
+                  --load-ca-privkey {{ slapd_app_path }}/ssl/{{ slapd_tls_cakey_file }} \
+                  --template {{ slapd_app_path }}/ssl/ldap_info.cfg \
+                  --outfile {{ slapd_app_path }}/ssl/{{ slapd_tls_cert_file }}
+  when: ldapinfo.changed or cainfo.changed
+
+# Secure access to the TLS certificates         
+- name: Set LDAP user in certificates group
+  user: name={{ slapd_user }} groups={{ slapd_ssl_group }} append=yes
+  
+- name: Secure certificates access
+  file: path={{ item }} group={{ slapd_ssl_group }} mode=g+r,o-r
+  with_items:
+    - "{{ slapd_app_path }}/ssl/{{ slapd_tls_cacert_file }}"
+    - "{{ slapd_app_path }}/ssl/{{ slapd_tls_key_file }}"
+    - "{{ slapd_app_path }}/ssl/{{ slapd_tls_cert_file }}"
+
+# Configure the LDAP server to use TLS  
+- name: Generate LDIF for TLS support configuration
+  template: src=roles/openldap-server/templates/tls/tls_support.ldif dest=/tmp/
+  register: ldif_tls_support
+  
+- name: Configure TLS support
+  shell: ldapmodify -Y EXTERNAL -H ldapi:/// -f {{ ldif_tls_support.dest }}
+  when: ldif_tls_support.changed
+  notify: restart slapd

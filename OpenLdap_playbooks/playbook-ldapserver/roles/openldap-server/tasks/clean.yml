@@ -1,0 +1,15 @@
+- name: Delete ou=Users and all of its members from the ldap sever 
+  when: clean_ldap_user
+  shell: ldapdelete -x -D cn=admin,dc=etriks,dc=eu -w {{ slapd_adminpw }} -r {{ou_users}}
+  
+- name: Delete ou=Group and all of its members from the ldap server'
+  when: clean_ldap_group
+  shell: ldapdelete -x -D cn=admin,dc=etriks,dc=eu -w {{ slapd_adminpw }} -r {{ou_group}}
+  
+- name: Delete ou=organization and all of its members from the ldap server'
+  when: clean_ldap_organization
+  shell: ldapdelete -x -D cn=admin,dc=etriks,dc=eu -w {{ slapd_adminpw }} -r {{ou_organization}}
+
+- name: Delete ou=project and all of its members from the ldap server'
+  when: clean_ldap_project
+  shell: ldapdelete -x -D cn=admin,dc=etriks,dc=eu -w {{ slapd_adminpw }} -r {{ou_project}}

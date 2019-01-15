@@ -1,0 +1,4 @@
+---
+# Restart network service to enable new config of ens192
+- name: restart network
+  service: name=network state=restarted enabled=yes

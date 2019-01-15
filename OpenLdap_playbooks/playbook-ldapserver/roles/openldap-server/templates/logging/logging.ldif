@@ -1,0 +1,6 @@
+# Configure logging in separate files
+dn: cn=config
+changetype: modify
+# Set log level
+replace: olcLogLevel
+olcLogLevel: {{ slapd_log_level }}

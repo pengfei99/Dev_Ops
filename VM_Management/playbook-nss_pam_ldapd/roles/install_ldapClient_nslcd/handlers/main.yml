@@ -1,0 +1,8 @@
+---
+# Restart nslcd
+- name: restart nslcd
+  service: name=nslcd state=restarted enabled=yes
+  
+# Restart sshd
+- name: restart sshd
+  service: name=sshd state=restarted enabled=yes

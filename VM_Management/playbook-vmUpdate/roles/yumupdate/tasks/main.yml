@@ -1,0 +1,22 @@
+---
+- name: Create snapshot
+  vmware_guest_snapshot:
+    hostname: "{{ vcenter_host_name }}"
+    username: "{{ user_name }}"
+    password: "{{ password }}"  
+    name: "{{ guest_name }}"
+    state: present
+    snapshot_name: "{{ snap_shot_name }}"
+    description: "{{ snap_shot_description }}"
+  register: snap_shot_created
+
+- name: Clean yum cache
+  command: yum clean all
+  when: snap_shot_created.changed
+
+- name: upgrade all packages when user want
+  yum: name=*   state=latest
+
+- name: restart the vm
+  command: /sbin/shutdown -r now
+  

@@ -1,0 +1,6 @@
+# Configure backend database index capabilities
+dn: olcDatabase={1}hdb,cn=config
+changetype: modify
+add: olcDbIndex
+olcDbIndex: uid pres,eq
+olcDbIndex: cn,sn,mail pres,eq,approx,sub

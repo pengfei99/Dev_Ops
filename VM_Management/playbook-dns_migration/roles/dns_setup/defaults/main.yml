@@ -1,0 +1,7 @@
+---
+
+#dns1 ip address
+dns1: 10.69.2.21
+
+#dns2 ip address
+dns2: 10.69.2.22

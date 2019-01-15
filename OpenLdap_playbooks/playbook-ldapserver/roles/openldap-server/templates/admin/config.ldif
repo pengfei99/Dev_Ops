@@ -1,0 +1,19 @@
+# Configure the admin access to the LDAP directory (cn=config)
+dn: olcDatabase={0}config,cn=config
+changetype: modify
+# Delete former ACLs
+delete: olcAccess
+-
+# Add new ACLs
+add: olcAccess
+olcAccess: {0}to * 
+    by dn.exact=gidNumber=0+uidNumber=0,cn=peercred,cn=external,cn=auth manage 
+    by * break
+-
+# Updating root DN
+replace: olcRootDN
+olcRootDN: cn={{ slapd_configuser }},cn=config
+-
+# Updating root password (hashed)
+replace: olcRootPW
+olcRootPW: {{ config_hashed_password.stdout }}

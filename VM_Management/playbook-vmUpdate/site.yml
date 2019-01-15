@@ -1,0 +1,10 @@
+---
+# This is the main site file.
+- hosts: CCLinPamD01
+  remote_user: bioaster
+  become: yes
+  become_user: root
+  become_method: sudo
+
+  roles:
+    - yumupdate

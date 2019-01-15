@@ -1,0 +1,8 @@
+---
+# Restart the OpenLDAP server (slapd)
+- name: restart slapd
+  service: name=slapd state=restarted enabled=yes
+
+# Restart the syslog server (rsyslog)
+- name: restart rsyslog
+  service: name=rsyslog state=restarted enabled=yes

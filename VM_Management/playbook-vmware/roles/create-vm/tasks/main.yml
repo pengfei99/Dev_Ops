@@ -1,0 +1,27 @@
+---
+
+
+- name: Create a vm on vSphere
+  vsphere_guest:
+    vcenter_hostname: "{{ vcenter_host_name }}"
+    username: "{{ user_name }}"
+    password: "{{ password }}"  
+    guest: "{{ guest_name }}"
+    validate_certs: no
+    from_template: yes
+    template_src: "{{ template }}"
+    cluster: "{{ cluster }}"
+    resource_pool: "{{ resource_pool }}"
+    vm_extra_config:
+      vcpu.hotadd: yes
+      mem.hotadd: yes
+      notes: "{{ vm_description }}"
+      
+- name: Gather facts of the created vm 
+  vsphere_guest: 
+    vcenter_hostname: "{{ vcenter_host_name }}"
+    username: "{{ user_name }}"
+    password: "{{ password }}"  
+    guest: "{{ guest_name }}"
+    vmware_guest_facts: yes
+    validate_certs: no

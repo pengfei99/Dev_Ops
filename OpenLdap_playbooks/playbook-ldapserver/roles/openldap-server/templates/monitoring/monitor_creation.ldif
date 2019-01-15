@@ -1,0 +1,8 @@
+# Create monitor user
+dn: cn={{ slapd_monitoruser }},dc={{ slapd_domain_name.split('.')[0] }},dc={{ slapd_domain_name.split('.')[1] }}
+changetype: add
+objectClass: simpleSecurityObject
+objectClass: organizationalRole
+cn: cn={{ slapd_monitoruser }}
+description: LDAP administrator
+userPassword: {{ openldap_hashed_monitorpw.stdout }}

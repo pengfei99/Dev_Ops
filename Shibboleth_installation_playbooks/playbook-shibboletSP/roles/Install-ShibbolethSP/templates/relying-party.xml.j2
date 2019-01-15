@@ -1,0 +1,54 @@
+<--This part you need to put him in section relying party -->
+
+  <!-- ========================================== -->
+    <!--      Relying Party Configurations          -->
+    <!-- ========================================== -->
+
+
+
+<rp:RelyingParty id="{{ server_name }}" provider="{{ idp_entity_id }}" defaultSigningCredentialRef="IdPCredential">
+        <rp:ProfileConfiguration xsi:type="saml:ShibbolethSSOProfile" includeAttributeStatement="false" 
+                                 assertionLifetime="PT5M" signResponses="conditional" signAssertions="never"
+                                 includeConditionsNotBefore="true"/>
+
+        <rp:ProfileConfiguration xsi:type="saml:SAML1AttributeQueryProfile" assertionLifetime="PT5M" 
+                                 signResponses="conditional" signAssertions="never"
+                                 includeConditionsNotBefore="true"/>
+
+        <rp:ProfileConfiguration xsi:type="saml:SAML1ArtifactResolutionProfile" signResponses="conditional" 
+                                 signAssertions="never"/>
+
+        <rp:ProfileConfiguration xsi:type="saml:SAML2SSOProfile" includeAttributeStatement="true" 
+                                 assertionLifetime="PT5M" assertionProxyCount="0" 
+                                 signResponses="never" signAssertions="always" 
+                                 encryptAssertions="conditional" encryptNameIds="never"
+                                 includeConditionsNotBefore="true"/>
+
+        <rp:ProfileConfiguration xsi:type="saml:SAML2ECPProfile" includeAttributeStatement="true" 
+                                 assertionLifetime="PT5M" assertionProxyCount="0" 
+                                 signResponses="never" signAssertions="always" 
+                                 encryptAssertions="conditional" encryptNameIds="never"
+                                 includeConditionsNotBefore="true"/>
+
+        <rp:ProfileConfiguration xsi:type="saml:SAML2AttributeQueryProfile" 
+                                 assertionLifetime="PT5M" assertionProxyCount="0" 
+                                 signResponses="conditional" signAssertions="never" 
+                                 encryptAssertions="conditional" encryptNameIds="never"
+                                 includeConditionsNotBefore="true"/>
+
+        <rp:ProfileConfiguration xsi:type="saml:SAML2ArtifactResolutionProfile" 
+                                 signResponses="never" signAssertions="always" 
+                                 encryptAssertions="conditional" encryptNameIds="never"/>
+
+        <rp:ProfileConfiguration xsi:type="saml:SAML2LogoutRequestProfile"
+                                 signResponses="conditional"/>
+    </rp:RelyingParty>
+
+
+<!--This part need to be put in section metadata configuration-->
+
+
+<metadata:MetadataProvider id="{{ server_name }}" xsi:type="metadata:FilesystemMetadataProvider"
+                                   metadataFile="/opt/shibboleth-idp/metadata/{{ server_name }}-metadata.xml"
+                                   maxRefreshDelay="P1D" />
+

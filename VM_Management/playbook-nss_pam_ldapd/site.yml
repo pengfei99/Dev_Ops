@@ -1,0 +1,12 @@
+---
+# This playbook will install nss-pam-ldapd and connect it to ldap server for authentication
+
+- name: Install and configure nss-pam-ldapd
+  user: root
+  hosts: imageBuilder
+  become: yes
+  become_user: root
+  become_method: sudo
+
+  roles:
+     - install_ldapClient_sssd

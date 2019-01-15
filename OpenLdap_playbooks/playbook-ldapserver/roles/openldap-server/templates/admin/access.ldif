@@ -1,0 +1,35 @@
+# Configure the admin access to the LDAP directory
+dn: olcDatabase={1}hdb,cn=config
+changetype: modify
+# Modifying LDAP domain name
+replace: olcSuffix
+olcSuffix: dc={{ slapd_domain_name.split('.')[0] }},dc={{ slapd_domain_name.split('.')[1] }}
+-
+# Deleting former ACLs
+delete: olcAccess
+-
+# Adding new ACLs
+add: olcAccess
+olcAccess: {0}to attrs=userPassword,shadowLastChange 
+    by self write by anonymous auth 
+    by dn="cn={{ slapd_adminuser }},dc={{ slapd_domain_name.split('.')[0] }},dc={{ slapd_domain_name.split('.')[1] }}" write 
+    by * none
+-
+add: olcAccess
+olcAccess: {1}to dn.base="" 
+    by * read
+-
+add: olcAccess
+olcAccess: {2}to * 
+    by self write 
+    by dn="cn={{ slapd_adminuser }},dc={{ slapd_domain_name.split('.')[0] }},dc={{ slapd_domain_name.split('.')[1] }}" write
+    by * read
+-
+# Updating root DN
+replace: olcRootDN
+olcRootDN: cn={{ slapd_adminuser }},dc={{ slapd_domain_name.split('.')[0] }},dc={{ slapd_domain_name.split('.')[1] }}
+-
+# Updating root password (hashed)
+replace: olcRootPW
+olcRootPW: {{ admin_hashed_password.stdout }}
+-

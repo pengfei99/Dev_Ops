@@ -1,0 +1,120 @@
+version: 1
+
+dn: dc=etriks,dc=eu
+objectClass: organization
+objectClass: dcObject
+objectClass: top
+dc: nodomain
+o: nodomain
+
+dn: cn=admin,dc=etriks,dc=eu
+objectClass: organizationalRole
+objectClass: simpleSecurityObject
+cn: admin
+userPassword:: e1NTSEF9R01UWFc2TlpKR283M2dJRkRxVlFIQjlFMFl2c2NVeCs=
+description: LDAP administrator
+
+dn: ou=Group,dc=etriks,dc=eu
+objectClass: top
+objectClass: organizationalUnit
+ou: Group
+
+dn: ou=Organization,dc=etriks,dc=eu
+objectClass: top
+objectClass: organizationalUnit
+ou: Organization
+
+dn: ou=Projects,dc=etriks,dc=eu
+objectClass: top
+objectClass: organizationalUnit
+ou: Projects
+
+dn: ou=Users,dc=etriks,dc=eu
+objectClass: top
+objectClass: organizationalUnit
+ou: Users
+
+dn: ou=abirisk,ou=Projects,dc=etriks,dc=eu
+objectClass: top
+objectClass: organizationalUnit
+ou: abirisk
+
+dn: ou=oncotrack,ou=Projects,dc=etriks,dc=eu
+objectClass: top
+objectClass: organizationalUnit
+ou: oncotrack
+
+dn: ou=bioaster,ou=Projects,dc=etriks,dc=eu
+objectClass: top
+objectClass: organizationalUnit
+ou: bioaster
+
+dn: ou=etriks,ou=Projects,dc=etriks,dc=eu
+objectClass: top
+objectClass: organizationalUnit
+ou: etriks
+
+dn: ou=vm_group,ou=abirisk,ou=Projects,dc=etriks,dc=eu
+objectClass: top
+objectClass: organizationalUnit
+ou: vm_group
+
+dn: ou=web_app_group,ou=abirisk,ou=Projects,dc=etriks,dc=eu
+objectClass: top
+objectClass: organizationalUnit
+ou: web_app_group
+
+dn: ou=portal,ou=web_app_group,ou=abirisk,ou=Projects,dc=etriks,dc=eu
+objectClass: top
+objectClass: organizationalUnit
+ou: portal
+
+dn: ou=transmart,ou=web_app_group,ou=abirisk,ou=Projects,dc=etriks,dc=eu
+objectClass: top
+objectClass: organizationalUnit
+ou: transmart
+
+dn: cn=projectCZAR,ou=portal,ou=web_app_group,ou=abirisk,ou=Projects,dc=etriks,dc=eu
+objectClass: top
+objectClass: groupOfNames
+cn: projectCZAR
+member: 
+
+dn: cn=admin,ou=portal,ou=web_app_group,ou=abirisk,ou=Projects,dc=etriks,dc=eu
+objectClass: top
+objectClass: groupOfNames
+cn: admin
+member: 
+
+dn: cn=data_curator,ou=vm_group,ou=abirisk,ou=Projects,dc=etriks,dc=eu
+objectClass: top
+objectClass: posixGroup
+cn: data_curator
+gidNumber: 5000
+description: Data curator
+
+dn: cn=data_loader,ou=vm_group,ou=abirisk,ou=Projects,dc=etriks,dc=eu
+objectClass: top
+objectClass: posixGroup
+cn: data_loader
+gidNumber: 5001
+description: Data curator
+
+dn: cn=Pengfei Liu,ou=Users,dc=etriks,dc=eu
+objectClass: top
+objectClass: person
+objectClass: posixAccount
+objectClass: organizationalPerson
+objectClass: inetOrgPerson
+cn: Pengfei Liu
+gidNumber: 10000
+homeDirectory: /home/p.liu/
+sn: Liu
+uid: p.liu
+uidNumber: 10000
+givenName: Pengfei
+loginShell: /bin/sh
+mail: pliu@cc.in2p3.fr
+userPassword:: e3NzaGE1MTJ9cFRKZGZXckY2bm94ckxEZnZVM2owMnFYc2w5WkVrQ2tHRk9iZ
+ XlQdEh2MVBOcUxod1MydFlNL3NMaVZIZi9Nek00cGNMODVsN2xIZEVlZHlBeHRDRWcyOUpZcXJY
+ VlFi

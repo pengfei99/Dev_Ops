@@ -1,0 +1,19 @@
+---
+
+#Ldap server url
+ldap_url: 10.70.3.118
+
+#Search base for user binding
+search_base: ou=Users,dc=bioaster,dc=org
+
+#binddn for admin account
+binddn: cn=admin,dc=bioaster,dc=org
+
+#bindpw admin account pwd
+bindpw: Liua1983
+
+#ssl_mode can be no or yes
+ssl_mode: no 
+
+#cert dir for start tls
+tls_cacertdir: /etc/openldap/cacerts

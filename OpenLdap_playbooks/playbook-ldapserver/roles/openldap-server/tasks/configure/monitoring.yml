@@ -1,0 +1,41 @@
+---
+# Configure the LDAP dn for monitoring
+# Basically, add a handle for munin OpenLDAP monitoring plugin.
+- name: Check if monitor password is already set
+  shell: "ldapsearch -Q -LLL -Y EXTERNAL -H ldapi:/// \
+          -b cn={{ slapd_monitoruser }},dc={{ slapd_domain_name.split('.')[0] }},dc={{ slapd_domain_name.split('.')[1] }} \
+          | grep 'cn: {{ slapd_monitoruser }}' | wc -l"
+  register: checkmonitorpw
+
+- name: Generate the root password for ldap
+  shell: slappasswd -s {{ slapd_monitorpw }} 
+  register: openldap_hashed_monitorpw
+  when: checkmonitorpw.stdout != '1' or slapd_admin_fgenpw
+
+- name: Generate LDIF for monitor user
+  template: src=roles/openldap-server/templates/monitoring/monitor_creation.ldif
+    dest=/tmp/
+  register: ldif_monitor_creation
+  when: openldap_hashed_monitorpw.changed
+  
+- name: Create monitor user
+  shell: ldapmodify -x -H ldap://{{ inventory_hostname }}/ \
+          -D cn={{ slapd_adminuser }},dc={{ slapd_domain_name.split('.')[0] }},dc={{ slapd_domain_name.split('.')[1] }} \
+          -w {{ slapd_adminpw }} -f {{ ldif_monitor_creation.dest }}
+  when: ldif_monitor_creation.changed
+  
+- name: Check if monitoring configuration is already set
+  shell: "ldapsearch -Q -LLL -Y EXTERNAL -H ldapi:/// -b cn=config \
+          | grep 'dn: cn=module{3},cn=config' | wc -l"
+  register: checkmonitoringconf
+
+- name: Generate LDIF for monitoring
+  template: src=roles/openldap-server/templates/monitoring/monitoring.ldif
+    dest=/tmp/
+  register: ldif_monitoring
+  when: checkmonitoringconf != '1'
+  
+- name: Configure monitoring DN
+  shell: ldapadd -Y EXTERNAL -H ldapi:/// -f {{ ldif_monitoring.dest }}
+  when: ldif_monitoring.changed
+  notify: restart slapd

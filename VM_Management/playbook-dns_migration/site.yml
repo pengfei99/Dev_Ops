@@ -1,0 +1,12 @@
+---
+# This playbook will modify dns server ip address which the vm will connect to
+
+- name: Update dns ip address
+  user: root
+  hosts: pam_dev
+  become: yes
+  become_user: root
+  become_method: sudo
+
+  roles:
+     - dns_setup

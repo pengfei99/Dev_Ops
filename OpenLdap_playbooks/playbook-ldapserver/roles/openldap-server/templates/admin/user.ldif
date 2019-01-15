@@ -1,0 +1,7 @@
+# Create admin user
+dn: cn={{ slapd_adminuser }},dc={{ slapd_domain_name.split('.')[0] }},dc={{ slapd_domain_name.split('.')[1] }}
+objectClass: simpleSecurityObject
+objectClass: organizationalRole
+cn: cn={{ slapd_adminuser }}
+description: LDAP administrator
+userPassword: {{ admin_hashed_password.stdout }}

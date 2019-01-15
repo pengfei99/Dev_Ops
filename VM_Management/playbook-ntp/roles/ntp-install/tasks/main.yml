@@ -1,0 +1,38 @@
+---
+
+- name: Install ntp damoen
+  yum:
+    name: {{ item }}
+    state: present
+  with_items:
+    - ntp
+    - ntpdate
+    - ntp-doc
+  register: ntp_installed
+
+- name: Register ntpd in systemctl
+  shell: chkconfig ntpd on
+  when: ntp_installed.changed
+
+- name: Enable firewall cmd 
+  firewalld: 
+     service: ntp
+     permanent: true
+     state: enabled
+
+- name: back up old /etc/ntp.conf file
+  command: mv /etc/ntp.conf /etc/ntp.conf.bkp
+  
+
+- name: Copy ntp.conf template to server
+  template:
+    src: ntp.conf.j2
+    dest: /etc/ntp.conf
+    owner: root
+    group: root
+    mode: 0644
+
+- name: Start and enable ntp damoen at server boot
+  service: ntpd
+  state: started
+  enabled: yes 

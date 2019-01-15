@@ -1,0 +1,8 @@
+---
+# OpenLDAP server installation tasks.
+- name: Install the openldap and required packages for Ubuntu
+  apt: name={{ item }} state=installed update_cache=yes
+  with_items: slapd_pkgs
+  
+- name: Ensure slapd is running
+  service: name=slapd state=running

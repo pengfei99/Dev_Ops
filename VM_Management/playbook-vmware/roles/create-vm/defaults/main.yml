@@ -1,0 +1,18 @@
+---
+
+vcenter_host_name: "10.69.7.66"
+
+user_name: "BIOASTER\\pliu"
+
+password: "ChangeMe"
+
+guest_name: "CCLinTestAnsible"
+
+template: "Template_Centos_7"
+
+cluster: "Cluster2"
+
+resource_pool: "/Resources"
+
+vm_description: "Test vm for ansbile vsphere client"
+

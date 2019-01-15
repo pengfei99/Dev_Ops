@@ -1,0 +1,25 @@
+# X.509 Certificate options
+#
+# DN options
+
+# The organization of the subject.
+organization = "{{ slapd_tls_organization }}"
+
+# The organizational unit of the subject.
+unit = "LDAP Registry"
+
+# The locality of the subject.
+locality = {{ slapd_tls_location }}
+
+# The state of the certificate owner.
+state = "{{ slapd_tls_state }}"
+
+# The country of the subject. Two letter code.
+country = {{ slapd_tls_country }}
+
+# The common name of the certificate owner.
+cn = "{{ slapd_tls_cacommonname }}"
+
+# Certificate authority parameters
+ca
+cert_signing_key

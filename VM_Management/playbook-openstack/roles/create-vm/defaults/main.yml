@@ -1,0 +1,26 @@
+---
+
+#nova creds for connecting hyperviser openstack
+# They are normally in ~/.novacreds/novarc.sh
+auth_url: https://cckeystone.in2p3.fr:35357/v2.0/
+
+user_name: pliu
+
+password: changeMe
+
+os_tenant_name: bioaster
+
+#nova boot args for spawn vm
+
+vm_name: cclintestoc
+
+#This can be obtain by nova image-list
+image_name: d34dfe78-70f6-49e0-b917-9bc5f4243117
+
+#This can be obtain by nova flavor-list
+flavor_name: m1.tiny
+
+#this keyName must exist in the account of user 
+cloud_keyName: bioaster_os
+
+vm_hostName: cclintestos.bioaster.org

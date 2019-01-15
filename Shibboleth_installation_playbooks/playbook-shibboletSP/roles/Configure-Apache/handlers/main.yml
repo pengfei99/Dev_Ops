@@ -1,0 +1,5 @@
+---
+# Restart the apache web server (httpd)
+- name: restart httpd
+  service: name=httpd state=restarted enabled=yes
+

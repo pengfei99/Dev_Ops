@@ -1,0 +1,18 @@
+# X.509 Certificate options
+#
+# DN options
+
+# The organization of the subject.
+organization = "{{ slapd_tls_organization }}"
+
+# The organizational unit of the subject.
+unit = "LDAP Registry"
+
+# The common name of the certificate owner.
+cn = "{{ slapd_tls_commonname }}"
+
+# Certificate parameters
+tls_www_server
+encryption_key
+signing_key
+expiration_days = 3650 # 10 years

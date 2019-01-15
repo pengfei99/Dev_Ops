@@ -1,0 +1,78 @@
+---
+
+- name: Install libselinux as prereq for selinux ansible module
+  yum:
+    name=libselinux-python
+    state=present
+
+- name: Disable SELinux
+  shell: setenforce 0
+  ignore_errors: True
+ 
+
+- name: Disabling SELinux in config file
+  selinux: state=disabled
+  ignore_errors: True
+  
+- name: Install nss-pam-ldapd 
+  yum: 
+    name: nss-pam-ldapd
+    state: present
+  register: nss_installed
+  
+- name: Back up default config file for nslcd
+  command: "mv /etc/{{ item }} /etc/{{ item }}.bkp"
+  with_items: 
+     - nslcd.conf
+     - nsswitch.conf
+     - ssh/sshd_config 
+     - pam.d/system-auth
+     - pam.d/password-auth
+     - pam.d/su
+     - pam.d/su-l
+     - pam.d/passwd
+  when: nss_installed.changed
+  register: conf_bkp
+  
+- name: copy nslcd and nsswitch config file to server
+  template: 
+    src: "{{ item }}.j2"
+    dest: /etc/{{ item }}
+    owner: root
+    group: root
+    mode: 0640
+  with_items: 
+    - nslcd.conf
+    - nsswitch.conf
+  when: conf_bkp.changed
+    
+- name: copy pam.d config file to server
+  template: 
+    src: "{{ item }}.j2"
+    dest: /etc/pam.d/{{ item }}
+    owner: root
+    group: root
+    mode: 0640
+  with_items: 
+    - system-auth
+    - password-auth
+    - su
+    - su-l
+    - passwd
+  notify: restart nslcd
+  when: conf_bkp.changed
+  
+- name: copy sshd_config to server
+  template:
+    src: sshd_config.j2
+    dest: /etc/ssh/sshd_config
+    owner: root
+    group: root
+    mode: 0640
+  notify: restart sshd
+  when: conf_bkp.changed
+    
+    
+    
+    
+    

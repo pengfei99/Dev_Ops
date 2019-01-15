@@ -1,0 +1,64 @@
+---
+# Default variables
+
+# Software packages
+slapd_pkgs:
+  - slapd
+  - ldap-utils
+
+slapd_tls_pkgs:
+  - gnutls-bin
+  - ssl-cert
+
+# Daemon configuration
+slapd_app_path: "/etc/ldap"
+slapd_lib_path: "/usr/lib/ldap"
+slapd_user: "openldap"
+slapd_group: "{{ slapd_user }}"
+slapd_ssl_group: "ssl-cert"
+
+# The domain suffix for the LDAP server (DITs might use other suffixes)
+slapd_domain_name: etriks.eu
+
+# Config credentials (cn=config)
+slapd_configuser: admin
+slapd_configpw: etriksPass
+slapd_config_fgenpw: false # Force config password regeneration
+
+# Admin credentials
+slapd_adminuser: admin
+slapd_adminpw: etriksPass
+slapd_admin_fgenpw: false # Force root password regeneration
+
+# The monitoring user
+slapd_monitoruser: monitor
+slapd_monitorpw: eTRIKSMonitor
+
+# TLS parameters
+slapd_tls_enabled: true
+slapd_tls_cakey_file: cakey.pem
+slapd_tls_cacert_file: cacert.pem
+slapd_tls_key_file: ldapkey.pem
+slapd_tls_cert_file: ldapcert.pem
+# Certificate Authority (CA) parameters
+slapd_tls_country: FR
+slapd_tls_state: france
+slapd_tls_location: villeurbanne
+slapd_tls_organization: eTRIKS
+slapd_tls_cacommonname: "eTRIKS CA"
+slapd_tls_commonname: "{{ inventory_hostname }}"
+
+# Logging configuration
+slapd_log_dir: "/var/log/ldap"
+slapd_log_file: "slapd.log"
+slapd_log_level: "conns filter config acl stats shell"
+
+#Populating or clean the ldap server
+clean_ldap_user: false # If true,clean the ou=users in ldap
+clean_ldap_group: false # If true,clean the ou=group in ldap
+clean_ldap_organization: false # If true,clean the ou=organization in ldap
+clean_ldap_project: false # If true,clean the ou=project in ldap
+ou_user: ou=Users,dc=etriks,dc=eu
+ou_group: ou=Group,dc=etriks,dc=eu
+ou_organization: ou=Organization,dc=etriks,dc=eu
+ou_project: ou=Projects,dc=etriks,dc=eu

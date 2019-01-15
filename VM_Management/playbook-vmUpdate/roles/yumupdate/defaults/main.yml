@@ -1,0 +1,13 @@
+---
+
+vcenter_host_name: "10.69.7.66"
+
+user_name: "BIOASTER\\pliu"
+
+password: "ChangeMe"
+
+guest_name: "CCLinTestAnsible"
+
+snap_shot_name: "Backup_before_yum_update"
+
+snap_shot_description: "Backup snap shot before yum update"

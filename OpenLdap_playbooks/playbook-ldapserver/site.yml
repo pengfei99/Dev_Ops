@@ -1,0 +1,9 @@
+---
+# This playbook is able to deploy OpenLDAP server on Ubuntu.
+- name: Deploy OpenLDAP server.
+  user: root
+  hosts: testservers
+
+  roles:
+    - openldap-server
+

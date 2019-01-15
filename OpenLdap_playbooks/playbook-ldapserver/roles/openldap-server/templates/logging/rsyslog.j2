@@ -1,0 +1,4 @@
+# Redirect Openldap logging to distinct log file
+local4.*    {{ slapd_log_dir }}/{{ slapd_log_file }}
+# Prevent any further logging to /var/log/syslog file
+& stop

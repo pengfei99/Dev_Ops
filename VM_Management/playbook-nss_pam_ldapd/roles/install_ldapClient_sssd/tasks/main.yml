@@ -1,0 +1,76 @@
+---
+
+- name: Install libselinux as prereq for selinux ansible module
+  yum:
+    name=libselinux-python
+    state=present
+
+- name: Disable SELinux
+  shell: setenforce 0
+  ignore_errors: True
+ 
+
+- name: Disabling SELinux in config file
+  selinux: state=disabled
+  ignore_errors: True
+  
+- name: Install sssd packages 
+  yum: 
+    name: sssd
+    state: present
+  register: sssd_installed
+  
+- name: Back up default config file
+  command: "mv /etc/{{ item }} /etc/{{ item }}.bkp"
+  with_items: 
+     - ssh/sshd_config
+     - openldap/ldap.conf
+     - pam.d/system-auth-ac
+     - pam.d/password-auth-ac
+  register: conf_bkp
+    
+- name: copy pam.d config file to server
+  template: 
+    src: "{{ item }}.j2"
+    dest: /etc/pam.d/{{ item }}
+    owner: root
+    group: root
+    mode: 0644
+  with_items: 
+    - system-auth-ac
+    - password-auth-ac
+  when: conf_bkp.changed
+
+- name: copy ldap.conf config file to server
+  template: 
+    src: "ldap.conf.j2"
+    dest: /etc/openldap/ldap.conf
+    owner: root
+    group: root
+    mode: 0644
+  when: conf_bkp.changed
+  
+- name: copy sssd config file to server
+  template: 
+    src: "sssd.conf.j2"
+    dest: /etc/sssd/sssd.conf
+    owner: root
+    group: root
+    mode: 0600
+  notify: restart sssd
+  when: conf_bkp.changed
+  
+- name: copy sshd_config to server
+  template:
+    src: sshd_config.j2
+    dest: /etc/ssh/sshd_config
+    owner: root
+    group: root
+    mode: 0640
+  notify: restart sshd
+  when: conf_bkp.changed
+    
+    
+    
+    
+    

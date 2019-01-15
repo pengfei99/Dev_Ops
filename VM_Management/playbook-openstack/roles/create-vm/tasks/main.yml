@@ -1,0 +1,22 @@
+---
+
+- name: Deploy an instance
+  os_server:
+    state: present
+    auth:
+      auth_url: "{{ auth_url }}"
+      username: "{{ user_name }}"
+      password: "{{ password }}"
+      project_name: "{{ os_tenant_name }}"
+      
+    name: "{{ vm_name }}"
+    image: "{{ image_name }}"
+    key_name: "{{ cloud_keyName }}"
+    timeout: 200
+    flavor: "{{ flavor_name }}"
+# The following information you can get by using nova network-list       
+#       nics:
+#         - net-id: b8371500-be10-4f7c-97bb-4a26482a9063
+#         - net-name: bioaster
+    meta:
+      hostname: "{{ vm_hostName }}"

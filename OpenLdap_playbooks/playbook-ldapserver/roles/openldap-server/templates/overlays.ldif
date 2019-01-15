@@ -1,0 +1,29 @@
+# Configure the LDAP engine overlays
+
+# Loading memberof overlay module
+dn: cn=module{1},cn=config
+objectClass: olcModuleList
+olcModulePath: {{ slapd_lib_path }}
+olcModuleLoad: {0}memberof.la
+
+# Loading refing overlay module
+dn: cn=module{2},cn=config
+objectClass: olcModuleList
+olcModulePath: {{ slapd_lib_path }}
+olcModuleLoad: {0}refint.la
+
+# Adding memberof overlay
+dn: olcOverlay={0}memberof,olcDatabase={1}hdb,cn=config
+objectClass: olcConfig
+objectClass: olcMemberOf
+objectClass: olcOverlayConfig
+olcOverlay: memberof
+
+# Adding refint overlay
+dn: olcOverlay={1}refint,olcDatabase={1}hdb,cn=config
+objectClass: olcConfig
+objectClass: olcOverlayConfig
+objectClass: olcRefintConfig
+olcOverlay: refint
+olcRefintAttribute: memberof member manager owner
+

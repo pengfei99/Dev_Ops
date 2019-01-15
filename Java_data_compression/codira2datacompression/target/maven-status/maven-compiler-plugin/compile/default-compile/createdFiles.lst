@@ -1,0 +1,4 @@
+org/bioaster/codira/data/compression/ZipDirThread.class
+org/bioaster/codira/data/compression/ZipDir.class
+org/bioaster/codira/data/compression/ZipDirThreadController.class
+org/bioaster/codira/data/compression/ReadConfigFile.class

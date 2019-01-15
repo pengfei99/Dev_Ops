@@ -1,0 +1,13 @@
+- name: Add module mod_shib into apache
+  copy:
+    src: roles/Configure-Apache/templates/shib.conf
+    dest: /etc/httpd/conf.d/shib.conf
+    owner: root
+    group: root
+    mode: 0644
+
+- name: Add shibboleth vhost to the apache
+  template:
+    src: roles/Configure-Apache/templates/shibboleth.conf.j2
+    dest: /etc/httpd/conf.d/shibboleth_SP_sample.conf
+  notify: restart httpd

@@ -1,0 +1,16 @@
+- name: Create log file for ldap backup script
+  shell: touch /var/log/LdapBackup.log
+  
+- name: Make folder for ldap backup script config
+  shell: mkdir /etc/ldap_backup
+   
+- name: Copy backup config file to the server
+  template: src=roles/openldap-server/templates/LdapConfig.ini dest=/etc/ldap_backup/LdapConfig.ini
+  
+- name: Copy backup script to the server
+  template: src=roles/openldap-server/templates/LdapBackUP.py dest=/usr/local/bin/LdapBackUP.py
+  register: ldapBackup_script
+  
+- name: create a cron job in cron daily
+  when: ldapBackup_script.changed
+  shell: ln -s {{ ldapBackup_script.dest }} /etc/cron.daily/ldapBackup

@@ -1,0 +1,10 @@
+---
+# Configure LDAP engine overlays.
+- name: Generate LDIF for overlays configuration
+  template: src=roles/openldap-server/templates/overlays.ldif dest=/tmp/
+  register: ldif_overlays
+  
+- name: Configure LDAP overlays
+  shell: ldapadd -Y EXTERNAL -H ldapi:/// -f {{ ldif_overlays.dest }}
+  when: ldif_overlays.changed
+  notify: restart slapd

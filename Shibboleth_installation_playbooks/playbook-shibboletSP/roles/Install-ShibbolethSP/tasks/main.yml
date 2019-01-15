@@ -1,0 +1,78 @@
+---
+
+- name: Test SELinux
+  shell: getenforce
+  register: test_selinux
+
+- name: Disable SELinux
+  shell: setenforce 0
+  when: test_selinux.stdout != "Disabled"
+
+- name: Disabling SELinux in config file
+  selinux: state=disabled
+
+- name: Install Shibboleth repository
+  copy:
+    src: roles/Install-ShibbolethSP/files/shibboleth.repo
+    dest: /etc/yum.repos.d/shibboleth.repo
+    owner: root
+    group: root
+    mode: 0655
+
+- name: Install shibboleth service provider
+  yum:
+    name: shibboleth
+    state: present
+
+- name: Configure shibd and metadata
+  template:
+    src: "{{ item }}.j2"
+    dest: /etc/shibboleth/{{ item }}
+    owner: shibd
+    group: shibd
+    mode: 0640
+  with_items:
+    - shibboleth2.xml
+    - sp-cert.pem
+    - sp-key.pem
+    - idp-metadata.xml
+    - sp-metadata.xml
+    - attribute-map.xml
+
+- name: Grant Apache access to shibd config file
+  file:
+    path: /etc/shibboleth/shibboleth2.xml
+    group: apache
+
+- name: Copy attribute policy file
+  copy:
+    src: attribute-policy.xml
+    dest: /etc/shibboleth/attribute-policy.xml
+    owner: root
+    group: root
+    mode: 0644
+  notify: restart shibd
+
+# To make IDP accepte SP's authentication request, you need 3 files
+- name: make a IDP config folder
+  file: path=/etc/shibboleth/idp_config state=directory
+  register: IDP_config
+  
+- name: Copy sp certificate and metadata to IDP config
+  template: 
+    src: "{{ item }}.j2"
+    dest: /etc/shibboleth/idp_config/{{ item }}
+    owner: shibd
+    group: shibd
+    mode: 0640
+  with_items: 
+    - sp-cert.pem
+    - sp-metadata.xml
+    
+- name: generate replying party config for IDP
+  template: 
+    src: relying-party.xml.j2
+    dest: /etc/shibboleth/idp_config/relying-party-idp.xml
+    owner: shibd
+    group: shibd
+    mode: 0640
