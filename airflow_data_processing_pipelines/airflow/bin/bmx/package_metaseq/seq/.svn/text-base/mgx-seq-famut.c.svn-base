@@ -1,0 +1,357 @@
+/*
+ *  mgx-fastmut.c
+ *
+ *  $Author: veyriejb $, $Date: 2011/11/29 23:33:49 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+ /**
+ * \file mgx-fastmut.c
+ * \brief This program simply mutates an input fasta file
+ *        with a given mutation profile
+ * \author Jean-Baptiste Veyrieras
+ * \version 1.0
+ * \date November 1 2011
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_list.h>
+#include <gdl/gdl_hash.h>
+
+// mixgenomix
+#include <ext/bam/sam.h>
+#include <utils/gzutil.h>
+
+#include "mixgenomix.h"
+
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-fastmut";
+
+static int help_flag = 0;
+static int verbose_flag = 0;
+static int zero_coord_flag = 0;
+static int no_reformatting_flag = 0;
+
+static gdl_string * INPUT      = NULL;  // name of the input Fasta file
+static gdl_string * MUTATION   = NULL;  // mutation file
+
+static struct option long_options[] = {
+/* These options set a flag. */
+{ "help", no_argument, &help_flag, 1 },
+{ "verbose", no_argument, &verbose_flag, 1 },
+{ "brief", no_argument, &verbose_flag, 2 },
+{ "zero-coord", no_argument, &verbose_flag, 1 },
+{ "no-reformatting", no_argument, &no_reformatting_flag, 1 },
+/* These options don't set a flag.
+ We distinguish them by their indices. */
+{ "input", required_argument, 0, 'i' },
+{ "mutation", required_argument, 0, 'm' },
+{ 0, 0, 0, 0 } };
+
+static int parse_argument(int argc, char *argv[]) {
+	int c;
+	while (1) {
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+		c = getopt_long(argc, argv, "i:m:", long_options, &option_index);
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+		switch (c) {
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf("option %s", long_options[option_index].name);
+			if (optarg)
+				printf(" with arg %s", optarg);
+			printf("\n");
+			break;
+		case 'i':
+			INPUT = gdl_string_clone(optarg);
+			break;
+		case 'm':
+			MUTATION = gdl_string_clone(optarg);
+			break;
+		case '?':
+			GDL_ERROR_VAL("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+/**
+ * \fn static int check_argument(void)
+ * \brief This function checks the main function arguments.
+ * \return a success indicator
+ */
+static int check_argument(void) {
+	if (INPUT == 0) {
+		GDL_ERROR_VAL("No input fasta file provided", GDL_FAILURE, 1);
+	}
+	if (MUTATION == 0) {
+		GDL_ERROR_VAL("No mutation file provided", GDL_FAILURE, 1);
+	}
+	return GDL_SUCCESS;
+}
+
+/**
+ * \fn static int help(void)
+ * \brief This function prints the help
+ */
+static int help(void) {
+	print_header(PROGRAM);
+	printf("\n");
+	printf("--help\tDisplay a brief help on program usage\n");
+	printf("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf("\n");
+	printf("--zero-coord\tUse this flag if mutation position are provided on 0-coordinate space\n");
+	printf("\n");
+	printf("--no-reformatting\tUse this flag if you do not want to change the format of the Fasta file\n");
+	printf("\n");
+	printf("--input or -i\tAn input fasta file\n");
+	printf("--mutation or -m\tThe mutation file\n");
+}
+
+typedef struct
+{
+   size_t position;
+   gdl_string * ref_allele;
+   gdl_string * mut_allele;
+} mgx_mutation;
+
+mgx_mutation * 
+mgx_mutation_alloc(void)
+{
+    mgx_mutation * m;
+
+    m = GDL_CALLOC (mgx_mutation, 1);
+
+    return m;
+}
+
+void
+mgx_mutation_free (mgx_mutation * m)
+{
+   if (m)
+   {
+       GDL_FREE (m->ref_allele);
+       GDL_FREE (m->mut_allele);
+       GDL_FREE (m);
+   }
+}
+
+
+void
+output_mutseq (const gdl_list * mutlist, const gdl_string * sequence, const size_t seqlen)
+{
+	if (mutlist)
+	{
+            int i;
+            size_t new_seq_len     = seqlen; 
+            size_t max_seq_len     = seqlen; 
+            gdl_string * new_seq   = 0;
+            // First, compute the size of the mutated sequence
+            gdl_list_itr * mut_itr = gdl_list_iterator_back (mutlist);
+            do
+            {
+               mgx_mutation * m = (mgx_mutation *) gdl_list_iterator_value (mut_itr);
+               size_t position     = (zero_coord_flag) ?  m->position : m->position-1;
+               long mutation_shift = strlen(m->mut_allele)-strlen(m->ref_allele);
+               if (mutation_shift > 0)
+               {
+                  max_seq_len = max_seq_len + mutation_shift;
+               }
+               new_seq_len = new_seq_len + mutation_shift;
+            } 
+            while(gdl_list_iterator_next (mut_itr));
+            gdl_list_iterator_free (mut_itr);
+
+            new_seq = gdl_string_alloc (max_seq_len);
+            strcpy(new_seq, sequence);
+
+            mut_itr = gdl_list_iterator_back (mutlist);
+            do
+            {
+               mgx_mutation * m = (mgx_mutation *) gdl_list_iterator_value (mut_itr);
+               size_t position  = (zero_coord_flag) ?  m->position : m->position-1;
+               long mutation_shift = strlen(m->mut_allele)-strlen(m->ref_allele);
+               if (mutation_shift > 0) // insertion
+               {
+                  // +mutation_shift to the right
+                  size_t ins_size = strlen(m->mut_allele);
+                  for(i=max_seq_len-1;i>=position+ins_size;i--)
+                  {
+                     new_seq[i]=new_seq[i-mutation_shift];
+                  }
+               }
+               else if (mutation_shift < 0) // deletion
+               {
+                  // -mutation_shift to the right
+                  size_t del_size = strlen(m->mut_allele);
+                  for(i=position+del_size;i<max_seq_len-1;i++)
+                  {
+                     new_seq[i]=new_seq[i-mutation_shift];
+                  }
+               }
+               for(i=0;i<strlen(m->mut_allele);i++)
+               { 
+                  if (i==0 && new_seq[position+i]!=m->ref_allele[i])
+                  {
+                     GDL_ERROR_VOID ("[ mgx-fastmut ] internal errror", GDL_FAILURE);
+                  }
+                  new_seq[position+i] = m->mut_allele[i];
+               }
+            } 
+            while(gdl_list_iterator_next (mut_itr));
+            gdl_list_iterator_free (mut_itr);
+
+            // output the sequence
+	    for(i=0;i<new_seq_len;i++)
+    	    {
+				if (! no_reformatting_flag) {
+					if (i && i % 80 == 0) fputc('\n', stdout);
+				}
+		    fputc(new_seq[i], stdout);
+	    }
+	    fputc('\n', stdout);
+	}
+}
+
+
+int main(int argc, char *argv[])
+{
+	int status;
+	parse_argument(argc, argv);
+	if (help_flag) {
+		exit(help());
+	}
+
+	status = check_argument();
+
+	if (status == GDL_SUCCESS) {
+
+		int c;
+		size_t i, j, n, maxlen = 0;
+		gdl_string * tok, * line = 0; 
+                gdl_list * mut_list;
+		gdl_hashtable * mutation_table;
+		mgxFILE * fh;
+
+		// Read the mutation file
+		if (verbose_flag)
+		{
+			fprintf(stderr, "[mgx-fastmut] read the mutation file %s\n", MUTATION);
+		}
+                mutation_table = gdl_hashtable_alloc (gdl_hash_default, 0);
+		fh = mgx_fileopen(MUTATION, "r", mgx_getzipmode (MUTATION));
+		while(mgx_getline (&line, &n, fh)!=-1)
+		{
+			i=j=0;
+                        mgx_mutation * mutation = mgx_mutation_alloc();
+                        // col 1 = sequence identifier (without whitespace)
+			gdl_string * seqid = gdl_string_next_token (line, n, &i, &j);
+			if (strlen(seqid) > maxlen) maxlen=strlen(seqid);
+                        // col 2 = mutation position
+                        tok = gdl_string_next_token (line, n, &i, &j);
+                        mutation->position = (size_t) atol(tok);
+                        gdl_string_free (tok);
+                        // col 3 = reference allele
+                        mutation->ref_allele = gdl_string_next_token (line, n, &i, &j);
+                        // col 4 = mutation_allele
+                        mutation->mut_allele = gdl_string_next_token (line, n, &i, &j);
+                        if ((mut_list=gdl_hashtable_lookup(mutation_table, seqid))==0) {
+                            mut_list = gdl_list_alloc (gdl_list_default);
+                            gdl_hashtable_add (mutation_table, seqid, mut_list, 0);
+                        }
+			gdl_list_push_back (mut_list, mutation, 0);
+			gdl_string_free (seqid);
+			GDL_FREE (line);
+			line=0;
+		}
+  		mgx_fileclose (MUTATION, fh);
+		// Read the sequence fasta file
+		if (verbose_flag)
+		{
+			fprintf(stderr, "[mgx-fastmut] open the file %s\n", INPUT);
+		}
+                unsigned char seq2mut = 0;
+                char * seq_buffer;
+                size_t seq2trim=0, nfound=0, seqlen=0, buffer_size=1000;
+		fh = mgx_fileopen(INPUT, "r", mgx_getzipmode (INPUT));
+                mut_list=0;
+		while ((c=mgx_getc(fh))!=EOF)
+		{
+                       if (c=='>')
+		       {
+                               output_mutseq (mut_list, seq_buffer, seqlen);
+                               gdl_list_free (mut_list);
+                               mut_list = 0;
+			       seq2mut  = 0;
+                               seqlen   = 0;
+			       line = gdl_string_alloc(maxlen);
+			       c = mgx_getc(fh);
+			       for(i=0;i<maxlen && (!isspace(c) && c!=EOF);i++,c=mgx_getc(fh))
+			       {
+				       line[i]=c;
+			       }
+			       fprintf(stdout, ">%s", line);
+                               while(c!='\n')
+                               {
+                                     fputc(c, stdout);
+                                     c = mgx_getc(fh);
+                               }
+                               fputc('\n', stdout);
+			       if ((mut_list=gdl_hashtable_lookup(mutation_table, line))!=0)
+			       {
+				       seq2mut = 1;
+                                       seq_buffer = GDL_CALLOC (char, buffer_size);
+				       nfound++;
+			       }
+			       gdl_string_free(line);
+		       } else if (seq2mut  && !isspace(c)) {
+                             if (seqlen == buffer_size) // increase the buffer
+                             {
+				    char * tmp = GDL_CALLOC (char, 2*buffer_size);
+				    memcpy(tmp, seq_buffer, sizeof(char)*buffer_size);
+				    GDL_FREE (seq_buffer);
+				    seq_buffer=tmp;
+				    buffer_size*=2;
+                             }
+                             seq_buffer[seqlen++]=c;
+                       } 
+                       else if (!seq2mut) 
+                       {
+                          fputc(c, stdout);
+                       }
+		}
+                output_mutseq(mut_list, seq_buffer, seqlen);
+		// last sequence
+		if (verbose_flag)
+		{
+			fprintf(stderr, "[mgx-fastmut] found %ld sequences\n", nfound);
+		}
+		mgx_fileclose (INPUT, fh);
+	}
+
+	exit(0);
+}

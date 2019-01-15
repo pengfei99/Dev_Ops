@@ -1,0 +1,366 @@
+/*
+ *  mgx-taxosubset.c
+ *
+ *  $Author: mahep $, $Date: 2011/11/16 08:45:24 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+#include <ctype.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_io.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_seq_io.h>
+#include <gdl/gdl_list.h>
+
+#include "mixgenomix.h"
+#include "gzutil.h"
+#include "taxo.h"
+
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-taxo2dot";
+
+static int help_flag    = 0;
+static int verbose_flag = 0;
+static int no_missing_flag = 0;
+static int taxid_flag = 0;
+
+static gdl_string * TAXONSREF   = NULL;
+static gdl_string * TAXONSPRED   = NULL;
+static gdl_string * TAXODB   = NULL;
+static gdl_string * OUTPUTFILE   = NULL;
+
+static struct option long_options[] =
+ {
+   /* These options set a flag. */
+   {"help", no_argument,          &help_flag, 1},
+   {"verbose", no_argument,       &verbose_flag, 1},
+   {"brief",   no_argument,       &verbose_flag, 0},
+   {"no-missing",   no_argument,       &no_missing_flag, 1},
+   {"taxid",   no_argument,       &taxid_flag, 1},
+  /* These options don't set a flag.
+      We distinguish them by their indices. */
+   {"ref",   required_argument, 0, 'r'},
+   {"pred",   required_argument, 0, 'p'},
+   {"taxo",   required_argument, 0, 't'},
+   {"output",   required_argument, 0, 'o'},
+   {0, 0, 0, 0}
+ };
+
+static int
+parse_argument (int argc, char *argv[])
+{
+	int c;
+
+   while (1)
+     {
+
+       /* getopt_long stores the option index here. */
+       int option_index = 0;
+
+       c = getopt_long (argc, argv, "r:p:t:o:",
+                        long_options, &option_index);
+
+       /* Detect the end of the options. */
+       if (c == -1)
+         break;
+
+       switch (c)
+         {
+         case 0:
+           /* If this option set a flag, do nothing else now. */
+           if (long_options[option_index].flag != 0)
+             break;
+           printf ("option %s", long_options[option_index].name);
+           if (optarg)
+             printf (" with arg %s", optarg);
+           printf ("\n");
+           break;
+
+         case 'o':
+           OUTPUTFILE = gdl_string_clone (optarg);
+           break;
+         case 'r':
+        	 TAXONSREF = gdl_string_clone (optarg);
+           break;
+         case 'p':
+        	 TAXONSPRED = gdl_string_clone (optarg);
+		   break;
+         case 't':
+		   TAXODB = gdl_string_clone (optarg);
+		   break;
+
+		 case '?':
+           GDL_ERROR_VAL ("Unknown arguments", GDL_EINVAL, -1);
+         default:
+           GDL_ERROR_VAL ("Bad arguments", GDL_EINVAL, -1);
+         }
+     }
+}
+
+static int
+check_argument (void)
+{
+	if (TAXODB == 0)
+	{
+		GDL_ERROR_VAL ("No taxonomy database specified",
+					   GDL_FAILURE,
+					   1);
+	}
+	if (TAXONSREF == 0)
+	{
+		GDL_ERROR_VAL ("No input (reference) list of taxons provided",
+					   GDL_FAILURE,
+					   1);
+	}
+	if (TAXONSPRED == 0)
+	{
+		GDL_ERROR_VAL ("No input (predicted) list of taxons provided",
+					   GDL_FAILURE,
+					   1);
+	}
+	if (OUTPUTFILE == 0)
+	{
+		GDL_ERROR_VAL ("No output file provided",
+					   GDL_FAILURE,
+					   1);
+	}
+	return GDL_SUCCESS;
+}
+
+
+static int
+help (void)
+{
+   print_header (PROGRAM);
+   printf ("\n");
+   printf ("--help\tDisplay a brief help on program usage\n");
+   printf ("--verbose\tOutput message on standard output to see what the program is doing\n");
+   printf ("\n");
+   printf ("--ref or -r\tThe first (reference) list of taxon\n");
+   printf ("--pred or -p\tThe second (predicted) list of taxon\n");
+   printf ("--taxo or -t\tThe taxonomy database\n");
+   printf ("--output or -o\tThe output file\n");
+   printf ("--taxid Flag specifying list of taxi (default format : names)\n");
+}
+
+
+
+int
+main (int argc, char *argv[])
+{
+  int status;
+
+  parse_argument (argc, argv);
+
+  if (help_flag)
+  {
+  	  exit (help());
+  }
+
+  status = check_argument ();
+
+  if (status == GDL_SUCCESS)
+  {
+
+		mgx_taxonomy * taxonomy;
+        FILE * stream;
+        size_t i, j, n, i1, i2, lca, same_branch, taxo_dist, is_leaf_1, is_leaf_2;
+        gdl_list      * taxons_ref, *taxons_pred;
+        gdl_string * tx;
+    	gdl_string    * line = 0;
+    	mgx_taxonomy_lookup_index *taxon_index;
+        gdl_list_itr * itr1, * itr2;
+        mgx_taxon *tax1, *tax2;
+        char header[200];
+
+        // read taxonomy
+	    stream   = gdl_fileopen (TAXODB, "r");
+	    taxonomy = mgx_taxonomy_fread (stream);
+	    gdl_fileclose (TAXODB, stream);
+
+	    if(verbose_flag){
+	    	printf("\nTaxonomy succesfully read, summary : \n");
+			printf("\t-number of nodes = %d\n", taxonomy->ntaxon);
+			printf("\t-maximum depth = %d\n", taxonomy->maxdepth);
+			printf("\t-root node ID = %s\n", taxonomy->root->names[0]);
+	    }
+
+	    // read first list of taxons to subset
+	    stream = gdl_fileopen (TAXONSREF, "r");
+    	taxons_ref      = gdl_list_alloc (gdl_list_default);
+    	while(gdl_getline (&line, &n, stream)!=-1)
+    	{
+    		i=j=0;
+    		tx = gdl_string_next_token (line, n, &i, &j);
+	    	//gdl_list_append (taxons_ref, tx, 0);
+	    	gdl_list_push_back (taxons_ref, tx, 0);
+	    	gdl_string_free (line);
+	    	line=0;
+	    }
+
+	    // read second list of taxons to subset
+	    stream = gdl_fileopen (TAXONSPRED, "r");
+    	taxons_pred      = gdl_list_alloc (gdl_list_default);
+    	while(gdl_getline (&line, &n, stream)!=-1)
+    	{
+    		i=j=0;
+    		tx = gdl_string_next_token (line, n, &i, &j);
+	    	//gdl_list_append (taxons_pred, tx, 0);
+	    	gdl_list_push_back (taxons_pred, tx, 0);
+	    	gdl_string_free (line);
+	    	line=0;
+	    }
+
+    	// check lists have the same size
+    	if( gdl_list_size(taxons_ref) != gdl_list_size(taxons_pred)){
+    		GDL_ERROR_VAL ("size of taxons lists don't match", GDL_FAILURE, 1);
+    	}else{
+    	    if(verbose_flag){
+    	    	printf("Lists of taxons read : processing %d taxons.\n", gdl_list_size(taxons_pred));
+    	    }
+    	}
+
+    	// build hash-table between provided taxons id (names or taxid) and their indices
+	    if (taxid_flag){
+    		taxon_index = mgx_taxonomy_taxon_lookup_build(taxonomy, "id");
+	    }else{
+    		taxon_index = mgx_taxonomy_taxon_lookup_build(taxonomy, "name");
+	    }
+
+	    // prepare taxo for lca
+		mgx_taxonomy_euler_tour(taxonomy);
+		mgx_taxonomy_rmq_prepare(taxonomy);
+
+		// update depth (just in case)
+		taxonomy->root->depth = 0;
+		mgx_taxonomy_update_depth(taxonomy, taxonomy->root->index);
+
+	    // open output file
+	    stream = gdl_fileopen (OUTPUTFILE, "w");
+
+	    // print header
+	    if(taxonomy->ranks){
+	    	if(taxonomy->taxons[0]->id){
+				sprintf(header,"tax1.id;tax1.name;tax1.depth;tax1.rank;tax1.isleaf;tax2.id;tax2.name;tax2.depth;tax2.rank;tax2.isleaf;lca.id;lca.name;lca.depth;lca.rank;taxo.dist;same.branch\n");
+	    	}else{
+				sprintf(header,"tax1.name;tax1.depth;tax1.rank;tax1.isleaf;tax2.name;tax2.depth;tax2.rank;tax2.isleaf;lca.name;lca.depth;lca.rank;taxo.dist;same.branch\n");
+	    	}
+	    }else{
+	    	if(taxonomy->taxons[0]->id){
+				sprintf(header,"tax1.id;tax1.name;tax1.depth;tax1.isleaf;tax2.id;tax2.name;tax2.depth;tax2.isleaf;lca.id;lca.name;lca.depth;taxo.dist;same.branch\n");
+	    	}else{
+				sprintf(header,"tax1.name;tax1.depth;tax1.isleaf;tax2.name;tax2.depth;tax2.isleaf;lca.name;lca.depth;taxo.dist;same.branch\n");
+	    	}
+	    }
+	    fprintf(stream, header);
+
+    	// process pairs of taxons
+		itr1 = gdl_list_iterator_front (taxons_ref);
+		itr2 = gdl_list_iterator_front (taxons_pred);
+		do{
+			// extract taxons
+			tax1 = mgx_taxonomy_lookup(taxonomy, taxon_index, gdl_list_iterator_value (itr1));
+			tax2 = mgx_taxonomy_lookup(taxonomy, taxon_index, gdl_list_iterator_value (itr2));
+			if(tax1 == 0){
+				printf("ERROR : taxon %s not found in the taxonomy\n", gdl_list_iterator_value (itr1));
+				GDL_ERROR_VAL ("EXITING", GDL_FAILURE, 1);
+			}
+			if(tax2 == 0){
+				printf("ERROR : taxon %s not found in the taxonomy\n", gdl_list_iterator_value (itr2));
+				GDL_ERROR_VAL ("EXITING", GDL_FAILURE, 1);
+			}
+			i1 = tax1->index;
+			i2 = tax2->index;
+			// extract lca
+			lca = mgx_taxonomy_lca_pair(taxonomy, i1, i2);
+			// compute taxo distance
+			taxo_dist = taxonomy->taxons[i1]->depth + taxonomy->taxons[i2]->depth - 2*taxonomy->taxons[lca]->depth;
+			// define "same branch" variable
+			same_branch = 0;
+			if(lca==i1 || lca==i2){
+				same_branch = 1;
+			}
+			// define "isleaf" variables
+			is_leaf_1 = 0;
+			is_leaf_2 = 0;
+			if(taxonomy->taxons[i1]->nchild == 0)
+				is_leaf_1 = 1;
+			if(taxonomy->taxons[i2]->nchild == 0)
+				is_leaf_2 = 1;
+			// print info
+		    if(taxonomy->ranks){
+		    	if(taxonomy->taxons[0]->id){
+		    		fprintf(stream,
+		    				"%d;%s;%d;%s;%d;"
+		    				"%d;%s;%d;%s;%d;"
+		    				"%d;%s;%d;%s;"
+		    				"%d;%d\n",
+		    				taxonomy->taxons[i1]->id, taxonomy->taxons[i1]->names[0], taxonomy->taxons[i1]->depth, taxonomy->ranks->rank_names[taxonomy->ranks->rid2tx[i1]], is_leaf_1,
+		    				taxonomy->taxons[i2]->id, taxonomy->taxons[i2]->names[0], taxonomy->taxons[i2]->depth, taxonomy->ranks->rank_names[taxonomy->ranks->rid2tx[i2]], is_leaf_2,
+		    				taxonomy->taxons[lca]->id, taxonomy->taxons[lca]->names[0], taxonomy->taxons[lca]->depth, taxonomy->ranks->rank_names[taxonomy->ranks->rid2tx[lca]],
+		    				taxo_dist, same_branch);
+		    	}else{
+		    		fprintf(stream,
+		    				"%s;%d;%s;%d;"
+		    				"%s;%d;%s;%d;"
+		    				"%s;%d;%s;"
+		    				"%d;%d\n",
+		    				taxonomy->taxons[i1]->names[0], taxonomy->taxons[i1]->depth, taxonomy->ranks->rank_names[taxonomy->ranks->rid2tx[i1]], is_leaf_1,
+		    				taxonomy->taxons[i2]->names[0], taxonomy->taxons[i2]->depth, taxonomy->ranks->rank_names[taxonomy->ranks->rid2tx[i2]], is_leaf_2,
+		    				taxonomy->taxons[lca]->names[0], taxonomy->taxons[lca]->depth, taxonomy->ranks->rank_names[taxonomy->ranks->rid2tx[lca]],
+		    				taxo_dist, same_branch);
+		    	}
+		    }else{
+		    	if(taxonomy->taxons[0]->id){
+		    		fprintf(stream,
+		    				"%d;%s;%d;%d;"
+		    				"%d;%s;%d;%d;"
+		    				"%d;%s;%d;"
+		    				"%d;%d\n",
+		    				taxonomy->taxons[i1]->id, taxonomy->taxons[i1]->names[0], taxonomy->taxons[i1]->depth, is_leaf_1,
+		    				taxonomy->taxons[i2]->id, taxonomy->taxons[i2]->names[0], taxonomy->taxons[i2]->depth, is_leaf_2,
+		    				taxonomy->taxons[lca]->id, taxonomy->taxons[lca]->names[0], taxonomy->taxons[lca]->depth,
+		    				taxo_dist, same_branch);
+		    	}else{
+		    		fprintf(stream,
+		    				"%s;%d;%d;"
+		    				"%s;%d;%d;"
+		    				"%s;%d;"
+		    				"%d;%d\n",
+		    				taxonomy->taxons[i1]->names[0], taxonomy->taxons[i1]->depth, is_leaf_1,
+		    				taxonomy->taxons[i2]->names[0], taxonomy->taxons[i2]->depth, is_leaf_2,
+		    				taxonomy->taxons[lca]->names[0], taxonomy->taxons[lca]->depth,
+		    				taxo_dist, same_branch);
+		    	}
+		    }
+			// increment 2nd iterator
+			gdl_list_iterator_next (itr2);
+		}while (gdl_list_iterator_next (itr1));
+
+
+
+		// close output file
+		gdl_fileclose (OUTPUTFILE, stream);
+
+  }
+
+  exit (0);
+}
+

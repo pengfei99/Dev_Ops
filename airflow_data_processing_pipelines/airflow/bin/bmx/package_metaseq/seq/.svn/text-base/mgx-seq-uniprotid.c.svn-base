@@ -1,0 +1,474 @@
+/*
+ *  mgx-db-uniprotid.c
+ *
+ *  $Author: mahep $, $Date: 2011/08/18 09:20:50 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+#include <ctype.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_io.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_hash.h>
+#include <gdl/gdl_string.h>
+
+#include "mixgenomix.h"
+#include "gzutil.h"
+
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-db-uniprotid";
+
+static int help_flag    = 0;
+static int verbose_flag = 0;
+static int build_flag = 0;
+
+static gdl_string * INPUT     = NULL;
+static gdl_string * OUTPUT    = NULL;
+static gdl_string * INDEX_DIR = NULL;
+static gdl_string * INPUT_SRC = NULL;
+
+static struct option long_options[] =
+ {
+   /* These options set a flag. */
+   {"help", no_argument,          &help_flag, 1},
+   {"verbose", no_argument,       &verbose_flag, 1},
+   {"brief",   no_argument,       &verbose_flag, 0},
+   {"build",   no_argument,       &build_flag, 1},
+   /* These options don't set a flag.
+      We distinguish them by their indices. */
+   {"output",   required_argument, 0, 'o'},
+   {"input",   required_argument, 0, 'i'},
+   {"index-dir",   required_argument, 0, 'd'},
+   {"input-src",   required_argument, 0, 's'},
+   {0, 0, 0, 0}
+ };
+
+static int
+parse_argument (int argc, char *argv[])
+{
+	int c;
+
+   while (1)
+     {
+
+       /* getopt_long stores the option index here. */
+       int option_index = 0;
+
+       c = getopt_long (argc, argv, "i:o:d:s:",
+                        long_options, &option_index);
+
+       /* Detect the end of the options. */
+       if (c == -1)
+         break;
+
+       switch (c)
+         {
+         case 0:
+           /* If this option set a flag, do nothing else now. */
+           if (long_options[option_index].flag != 0)
+             break;
+           printf ("option %s", long_options[option_index].name);
+           if (optarg)
+             printf (" with arg %s", optarg);
+           printf ("\n");
+           break;
+   	 case 'i':
+           INPUT = gdl_string_clone (optarg);
+           break;
+         case 'o':
+           OUTPUT = gdl_string_clone (optarg);
+           break;
+         case 'd':
+           INDEX_DIR = gdl_string_clone (optarg);
+           break;
+         case 's':
+           INPUT_SRC = gdl_string_clone (optarg);
+           break;
+         case '?':
+           GDL_ERROR_VAL ("Unknown arguments", GDL_EINVAL, -1);
+         default:
+           GDL_ERROR_VAL ("Bad arguments", GDL_EINVAL, -1);
+         }
+     }
+}
+
+static int
+check_argument (void)
+{
+
+	if (INPUT == 0)
+	{
+		GDL_ERROR_VAL ("No input file provided",
+					   GDL_FAILURE,
+					   1);
+	}
+	if (build_flag && OUTPUT == 0)
+	{
+		GDL_ERROR_VAL ("No output directory provided",
+					   GDL_FAILURE,
+					   1);
+	}
+	return GDL_SUCCESS;
+}
+
+
+static int
+help (void)
+{
+   print_header (PROGRAM);
+   printf ("\n");
+   printf ("--help\tDisplay a brief help on program usage\n");
+   printf ("--verbose\tOutput message on standard output to see what the program is doing\n");
+   printf ("\n");
+   printf ("--build\tBuild the indexes");
+   printf ("\n");
+   printf ("--input or -i\tsingle identifier or a file listing identifiers or the input database when --build\n");
+   printf ("--output or -o\tThe output file or directory when --build");
+   printf ("--input-src or -s\tThe source domain of input identifiers among:\n   * UniProtKB-ID\n   * Gene-ID\n   * Refseq\n   * GI\n   * EMBL\n");
+   printf ("--index-dir or -d\tThe directory where indexes are stored\n");
+}
+/*
+1	UniProtKB-AC
+2	UniProtKB-ID
+3	GeneID (EntrezGene)
+4	RefSeq
+5	GI
+6	PDB
+7	GO
+8	IPI
+9	UniRef100
+10	UniRef90
+11	UniRef50
+12	UniParc
+13	PIR
+14	NCBI-taxon
+15	MIM
+16	UniGene
+17	PubMed
+18	EMBL
+19	EMBL-CDS
+20	Ensembl
+21	Ensembl_TRS
+22	Ensembl_PRO
+23	Additional PubMed
+*/
+static int
+fwrite_id_map (FILE * stream, const gdl_string * key, const gdl_string * value)
+{
+   int status;
+   size_t i, ntoken;
+   gdl_string ** tokens;
+
+
+   if (!strcmp(value, "")) {
+      return GDL_SUCCESS;
+   }
+   
+   tokens = gdl_string_split (value, "; ", &ntoken);
+   
+   if (ntoken == 0) {
+      return GDL_SUCCESS;
+   }
+   
+   status = gdl_string_fwrite(stream, key);
+   GDL_FWRITE_STATUS (status, GDL_SUCCESS);
+   
+   
+   unsigned int n = (unsigned int) ntoken;
+   status = fwrite(&n, sizeof(unsigned int), 1, stream);
+   GDL_FWRITE_STATUS (status, 1);
+   
+   for(i = 0; i < ntoken; i++) {
+      status = gdl_string_fwrite(stream, tokens[i]);
+      GDL_FWRITE_STATUS (status, GDL_SUCCESS);
+   }
+ 
+   GDL_MATRIX_FREE (tokens, ntoken);
+   
+   return GDL_SUCCESS;  
+}
+
+static gdl_hashtable *
+fread_id_map (const gdl_string * in_src, const gdl_string * input_dir) {
+   int status;
+   size_t i;
+   gdl_hashtable * table;
+   gdl_string    * file, * uid, * val;
+   unsigned int n;
+   FILE * stream;
+   
+   if (!strcmp(in_src, "GI")) {
+      file = gdl_string_sprintf ("%s/UniProtKB-AC_2_GI.db", input_dir);
+   } else if (!strcmp(in_src, "Refseq")) {
+      file = gdl_string_sprintf ("%s/UniProtKB-AC_2_Refseq.db", input_dir);
+   } else if (!strcmp(in_src, "Gene-ID")) {
+      file = gdl_string_sprintf ("%s/UniProtKB-AC_2_Gene-ID.db", input_dir);
+   } else if (!strcmp(in_src, "UniProtKB-ID")) {
+      file = gdl_string_sprintf ("%s/UniProtKB-AC_2_UniProtKB-ID.db", input_dir);
+   } else if (!strcmp(in_src, "EMBL")) {
+      file = gdl_string_sprintf ("%s/UniProtKB-AC_2_EMBL.db", input_dir);
+   }
+  
+   /*if (verbose_flag) {  
+      fprintf (stderr, "[ mgx-db-uniprotid ] Load index %s: wait...", file);
+   }*/
+   stream = gdl_fileopen(file, "r");
+   table  = gdl_hashtable_alloc (gdl_string_interface, 0);
+   while (fgetc(stream)!=EOF) {
+      fseek(stream, -1, SEEK_CUR);
+      uid = gdl_string_fread (stream);
+      status = fread(&n, sizeof(unsigned int), 1, stream);
+      for(i = 0; i < (size_t)n; i++) {
+         val = gdl_string_fread (stream);
+         gdl_hashtable_add (table, val, gdl_string_clone (uid), 1);
+         gdl_string_free (val);
+      }
+      gdl_string_free (uid);
+   }
+   gdl_fileclose(file, stream);
+   gdl_string_free (file);
+
+   /*if (verbose_flag) {  
+      fprintf (stderr, "\b\b\b\b\b\b\b[ OK ]\n");
+   }*/
+
+   return table;
+}
+
+static int
+create_index (const gdl_string * in_src, const gdl_string * input_dir) {
+   int status;
+   gdl_hashtable * table;
+   gdl_string    * file;
+   FILE * stream;
+   
+   if (!strcmp(in_src, "GI")) {
+      file = gdl_string_sprintf ("%s/UniProtKB-AC_2_GI.db", input_dir);
+   } else if (!strcmp(in_src, "Refseq")) {
+      file = gdl_string_sprintf ("%s/UniProtKB-AC_2_Refseq.db", input_dir);
+   } else if (!strcmp(in_src, "Gene-ID")) {
+      file = gdl_string_sprintf ("%s/UniProtKB-AC_2_Gene-ID.db", input_dir);
+   } else if (!strcmp(in_src, "UniProtKB-ID")) {
+      file = gdl_string_sprintf ("%s/UniProtKB-AC_2_UniProtKB-ID.db", input_dir);
+   } else if (!strcmp(in_src, "EMBL")) {
+      file = gdl_string_sprintf ("%s/UniProtKB-AC_2_EMBL.db", input_dir);
+   }
+
+   if (verbose_flag) {
+      fprintf(stderr, "[ mgx-db-uniprotid ] Create index for %s (this can take several minutes): wait...", in_src);
+   }
+  
+   table = fread_id_map (in_src, input_dir);
+   stream = gdl_fileopen(file, "w");
+   gdl_hashtable_fwrite (stream, table);
+   gdl_hashtable_free (table);
+   gdl_fileclose(file, stream);
+   gdl_string_free (file);
+
+   if (verbose_flag) {
+      fprintf(stderr, "\b\b\b\b\b\b\b[ DONE ]\n");
+   }
+
+   return GDL_SUCCESS;
+}
+
+static int
+build_db (const gdl_string * input_file, const gdl_string * output_dir)
+{
+   gdl_string * ofile, ** tokens, * line = 0;
+   size_t i,j,n, ntoken;
+   FILE ** ostreams, * istream;
+
+   /**
+   * Step-1 - Build the temporary index files
+   */
+   ostreams = GDL_CALLOC (FILE *, 5);
+   // UniProtKB-AC_2_UniProtKB-ID.db
+   ofile       = gdl_string_sprintf("%s/UniProtKB-AC_2_UniProtKB-ID.db", output_dir);
+   ostreams[0] = gdl_fileopen(ofile, "w");
+   gdl_string_free (ofile);
+   // UniProtKB-AC_2_GeneID
+   ofile       = gdl_string_sprintf("%s/UniProtKB-AC_2_Gene-ID.db", output_dir);
+   ostreams[1] = gdl_fileopen(ofile, "w");
+   gdl_string_free (ofile);
+   // UniProtKB-AC_2_Refseq
+   ofile       = gdl_string_sprintf("%s/UniProtKB-AC_2_Refseq.db", output_dir);
+   ostreams[2] = gdl_fileopen(ofile, "w");
+   gdl_string_free (ofile);
+   // UniProtKB-AC_2_GI
+   ofile       = gdl_string_sprintf("%s/UniProtKB-AC_2_GI.db", output_dir);
+   ostreams[3] = gdl_fileopen(ofile, "w");
+   gdl_string_free (ofile);
+   // UniProtKB-AC_2_EMBL
+   ofile       = gdl_string_sprintf("%s/UniProtKB-AC_2_EMBL.db", output_dir);
+   ostreams[4] = gdl_fileopen(ofile, "w");
+   gdl_string_free (ofile);
+
+   gzFile stream = gzopen (input_file, "r");
+   i=0;
+   while(gz_getline (&line, &n, stream)!=-1)
+   {
+       i++;
+       if (verbose_flag && i%100000==0) {
+         fprintf(stderr, "[ mgx-db-uniprotid ] Read %ld lines of %s\n", i, input_file);
+       }
+       tokens  = gdl_string_split (line, "\t", &ntoken);
+       // UniProtKB-AC_2_UniProtKB-ID.db
+       fwrite_id_map (ostreams[0], tokens[0], tokens[1]);
+       // UniProtKB-AC_2_GeneID
+       fwrite_id_map (ostreams[1], tokens[0], tokens[2]);
+       // UniProtKB-AC_2_Refseq
+       fwrite_id_map (ostreams[2], tokens[0], tokens[3]);
+       // UniProtKB-AC_2_GI
+       fwrite_id_map (ostreams[3], tokens[0], tokens[4]);
+	   // UniProtKB-AC_2_EMBL
+       fwrite_id_map (ostreams[4], tokens[0], tokens[17]);
+       // Clean mem
+       GDL_MATRIX_FREE (tokens, ntoken);
+       gdl_string_free (line);
+       line=0;
+   }
+   gzclose(stream);
+   for(i=0;i<5;i++) {   
+      gdl_fileclose("output", ostreams[i]);
+   }
+   GDL_FREE (ostreams);
+   /**
+   * Step 2 - Remplace current index files by a serialization
+   *          of the corresponding hashtable
+   */
+   create_index ("UniProtKB-ID", output_dir);
+   create_index ("Gene-ID", output_dir);
+   create_index ("Refseq", output_dir);
+   create_index ("GI", output_dir);
+   create_index ("EMBL", output_dir);
+    
+   return GDL_SUCCESS;
+}
+
+static gdl_string **
+read_src_identifiers (const gdl_string * in, size_t * n)
+{
+   gdl_string ** src_ids = 0;
+
+   if (gdl_isfile (in)) { 
+      if (verbose_flag) { 
+         fprintf (stderr, "[ mgx-db-uniprotid ] Load source identifiers from file %s: wait...", in);
+      }
+      src_ids = gdl_string_one_column_file (in, n);
+      if (verbose_flag) {  
+         fprintf (stderr, "\b\b\b\b\b\b\b[ OK ]\n");
+      }
+   } else { 
+      if (verbose_flag) { 
+         fprintf (stderr, "[ mgx-db-uniprotid ] Assume single identifier from command line: %s\n", in);
+      }
+      *n=1;
+      src_ids    = GDL_MALLOC (gdl_string *, 1);
+      src_ids[0] = gdl_string_clone (in);
+   }
+
+   return src_ids;
+} 
+
+static gdl_hashtable *
+load_id_map (const gdl_string * in_src, const gdl_string * input_dir) {
+   int status;
+   gdl_hashtable * table;
+   gdl_string    * file, * uid, * val;
+   FILE * stream;
+   
+   if (!strcmp(in_src, "GI")) {
+      file = gdl_string_sprintf ("%s/UniProtKB-AC_2_GI.db", input_dir);
+   } else if (!strcmp(in_src, "Refseq")) {
+      file = gdl_string_sprintf ("%s/UniProtKB-AC_2_Refseq.db", input_dir);
+   } else if (!strcmp(in_src, "Gene-ID")) {
+      file = gdl_string_sprintf ("%s/UniProtKB-AC_2_Gene-ID.db", input_dir);
+   } else if (!strcmp(in_src, "UniProtKB-ID")) {
+      file = gdl_string_sprintf ("%s/UniProtKB-AC_2_UniProtKB-ID.db", input_dir);
+   } else if (!strcmp(in_src, "EMBL")) {
+      file = gdl_string_sprintf ("%s/UniProtKB-AC_2_EMBL.db",input_dir);
+   }
+  
+   if (verbose_flag) {  
+      fprintf (stderr, "[ mgx-db-uniprotid ] Load index %s: wait...", file);
+   }
+   stream = gdl_fileopen(file, "r");
+   table  = gdl_hashtable_alloc (gdl_string_interface, 0);
+   status = gdl_hashtable_fread (stream, table);
+   gdl_fileclose(file, stream);
+   gdl_string_free (file);
+
+   if (verbose_flag) {  
+      fprintf (stderr, "\b\b\b\b\b\b\b[ OK ]\n");
+   }
+
+   return table;
+}
+
+int
+main (int argc, char *argv[])
+{
+  int status;
+
+  parse_argument (argc, argv);
+
+  if (help_flag)
+  {
+  	  exit (help());
+  }
+
+  status = check_argument ();
+
+  if (status == GDL_SUCCESS)
+  {
+	    gdl_runtime * runtime;
+            FILE * stream;
+            // setup untime
+	    runtime = runtime_setup ();
+
+            if (build_flag) {
+               build_db (INPUT, OUTPUT);
+            } else {
+               size_t i, nsrc_id;
+               gdl_string * uid, ** src_ids = 0;
+
+               // Get the source identifiers
+               src_ids = read_src_identifiers (INPUT, &nsrc_id);             
+               // Load the corresponding index
+               gdl_hashtable * index = load_id_map (INPUT_SRC, INDEX_DIR);
+               // Output the uniprot identifiers
+               for(i = 0; i < nsrc_id; i++) { 
+                  if ((uid = gdl_hashtable_lookup(index, src_ids[i])) != 0) {
+                     fprintf (stdout, "%s\t%s\n", src_ids[i], uid);
+                  } else {
+                     fprintf (stdout, "%s\tNA\n", src_ids[i]);
+                  }
+               }
+               GDL_MATRIX_FREE (src_ids, nsrc_id);
+               gdl_hashtable_free (index);
+            }
+	    // turn down runtime
+	    runtime_setdown (runtime);
+  }
+
+  exit (0);
+}
+

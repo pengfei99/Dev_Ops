@@ -1,0 +1,1412 @@
+/*
+ *  mgx-fqsim.c
+ *
+ *  $Author: veyriejb $, $Date: 2012/02/07 17:19:34 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+ /**
+ * \file mgx-fqsim.c
+ * \brief This program simulates reads and outputs the simulated reads in FASTQ format
+ * \author Jean-Baptiste Veyrieras
+ * \author Maud Tournoud
+ * \version 1.0
+ * \date March 2015
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <pthread.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_randist.h>
+#include <gdl/gdl_list.h>
+#include <gdl/gdl_hash.h>
+#include <gdl/gdl_bit_vector.h>
+#include <gdl/gdl_math.h>
+#include "mixgenomix.h"
+#include <utils/gzutil.h>
+#include <ext/kseq/kseq.h>
+
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-seq-fqsim";
+
+static int help_flag    = 0;
+static int verbose_flag = 0;
+
+static gdl_string * INPUT_FILE    = NULL; // Configuration file
+static gdl_string * FRAG_SEQ_FILE = NULL; // Fragment sequences in FASTA format
+static gdl_string * OUTPUT        = NULL; // Output stem name
+static size_t READ_LENGTH         = 301;  // Read length (default is 301)
+static size_t N_THREAD            = 1;    // Number of threads
+static size_t SEED =  20;
+static gdl_string * READ_PREFIX        = NULL; // Read prefix
+static gdl_string * PAIR_SEP        = " "; // pair separator; default = space
+static struct option long_options[] = {
+/* These options set a flag. */
+{ "help", no_argument, &help_flag, 1 },
+{ "verbose", no_argument, &verbose_flag, 1 },
+{ "brief", no_argument, &verbose_flag, 2 },
+/* These options don't set a flag.
+ We distinguish them by their indices. */
+{ "input", required_argument, 0, 'i' },
+{ "frag-seq", required_argument, 0, 'f' },
+{ "read-length", required_argument, 0, 'r' },
+{ "output", required_argument, 0, 'o' },
+{ "thread", required_argument, 0, 't' },
+{ "seed", required_argument, 0, 's' },
+{ "prefix", required_argument, 0, 'p' },
+{ "pair-sep", required_argument, 0, 'd' },
+{ 0, 0, 0, 0 } };
+
+static int parse_argument(int argc, char *argv[]) {
+	int c;
+	while (1) {
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+		c = getopt_long(argc, argv, "i:f:r:t:o:s:p:d:", long_options, &option_index);
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+		switch (c) {
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf("option %s", long_options[option_index].name);
+			if (optarg)
+				printf(" with arg %s", optarg);
+			printf("\n");
+			break;
+		case 'i':
+			INPUT_FILE = gdl_string_clone(optarg);
+			break;
+		case 'f':
+			FRAG_SEQ_FILE = gdl_string_clone(optarg);
+			break;
+		case 'r':
+			READ_LENGTH = atol(optarg);
+			break;
+		case 't':
+			N_THREAD = atol(optarg);
+			break;
+		case 'o':
+			OUTPUT = gdl_string_clone(optarg);
+			break;
+		case 's':
+			SEED = atol(optarg);
+			break;
+		case 'p':
+			READ_PREFIX = gdl_string_clone(optarg);
+			break;
+		case 'd':
+			PAIR_SEP = gdl_string_clone(optarg);
+			break;
+		case '?':
+			GDL_ERROR_VAL("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+/**
+ * \fn static int check_argument(void)
+ * \brief This function checks the main function arguments.
+ * \return a success indicator
+ */
+static int check_argument(void) {
+	if (INPUT_FILE == 0) {
+		GDL_ERROR_VAL("No configuration file provided", GDL_FAILURE, 1);
+	}
+	if (FRAG_SEQ_FILE == 0) {
+		GDL_ERROR_VAL("No fragment sequences FASTA file provided", GDL_FAILURE, 1);
+	}
+        if (OUTPUT == 0) {
+		GDL_ERROR_VAL("No output stem provided", GDL_FAILURE, 1);
+        }
+	return GDL_SUCCESS;
+}
+
+/**
+ * \fn static int help(void)
+ * \brief This function prints the help
+ */
+static int help(void) {
+	print_header(PROGRAM);
+	printf("\n");
+	printf("--help\tDisplay a brief help on program usage\n");
+	printf("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf("\n");
+	printf("--input or -i\tThe configuration file\n");
+	printf("--frag-seq or -f\tThe fragment sequences FASTA file\n");
+	printf("--read-length or -r\tNumber of reads\n");
+	printf("--output or -o\tThe output stem name\n");
+}
+
+typedef struct {
+   size_t length;
+   gdl_bit_vector * seq;
+} mgx_seq_zipseq;
+
+typedef struct {
+   size_t nseq;
+   gdl_string     ** seq_labels;
+   mgx_seq_zipseq ** sequences;
+} mgx_seq_fasta;
+
+typedef struct {
+   const gdl_rng * rng; // random generator
+   gdl_boolean paired;  // 1 if paired mode
+   size_t read_max_length;
+   size_t read_length;
+   double * sub_prob;
+   double * ins_prob;
+   double * del_prob;
+   double * err_prob;
+   double ** err_type_prob;
+   double ** sub_mat;
+   size_t * ins_size;
+   gdl_ran_discrete_t * ins_size_law;
+   size_t * del_size;
+   gdl_ran_discrete_t * del_size_law;
+   size_t n_qscore;
+   unsigned char * qscores;
+   gdl_ran_discrete_t ** qscore_law;;
+   gdl_string * sub_error_tab;
+   gdl_string * sub_error_mat;
+   gdl_string * ins_error_tab;
+   gdl_string * ins_error_size;
+   gdl_string * del_error_tab;
+   gdl_string * del_error_size;
+   gdl_string * qual_score_mat;
+} mgx_seq_sim_config;
+
+typedef struct {
+   size_t idx;
+   size_t f_from;
+   size_t f_to;
+   const mgx_seq_sim_config * sim_config;
+   const mgx_seq_fasta      * fragments;
+   gdl_string * log_file;
+   gdl_string * fw_file;
+   gdl_list * fw_read_buffer;
+   gdl_string * bw_file;
+   gdl_list * bw_read_buffer;
+} mgx_seq_sim_thread_parameter;
+
+typedef struct {
+   size_t length;
+   gdl_string    * label;
+   unsigned char * seq;
+   unsigned char * qual;
+   gdl_string    * cigar;
+   const gdl_string    * frag; // just a pointer on it, do not own the property
+} mgx_seq_sim_read;
+
+int
+get_base_index (unsigned char base)
+{
+   switch(base) {
+      case 'A':
+         return 0;
+      case 'T':
+         return 1;
+      case 'C':
+         return 2;
+      case 'G':
+         return 3;
+      default:
+         return -1;
+   }
+}
+
+void 
+mgx_seq_zipseq_set (mgx_seq_zipseq * z, const size_t i, const char c)
+{
+   switch(c) {
+      case 'A':
+         break;
+      case 'T':
+         gdl_bit_vector_set(z->seq, 2*i+1);
+         break;
+      case 'G':
+         gdl_bit_vector_set(z->seq, 2*i);
+         gdl_bit_vector_set(z->seq, 2*i+1);
+         break;
+      case 'C':
+         gdl_bit_vector_set(z->seq, 2*i);
+         break;
+      default:
+         break;
+   }
+}
+
+unsigned char 
+mgx_seq_zipseq_get (const mgx_seq_zipseq * z, const size_t i) {
+   if (gdl_bit_vector_get(z->seq, 2*i)) {
+      if (gdl_bit_vector_get(z->seq, 2*i+1)) {
+         return 'G';
+      } else {
+         return 'C';
+      }
+   } else if (gdl_bit_vector_get(z->seq, 2*i+1)) {
+      return 'T';
+   }
+   return 'A';
+}
+/**
+ * Creates a mgx_seq_zipseq object and 
+ * returns a pointer on it
+ *
+ * 00 = A
+ * 01 = T
+ * 10 = C
+ * 11 = G
+ */
+mgx_seq_zipseq *
+mgx_seq_zipseq_create (const char * seq, const size_t length, const gdl_rng * rng) {
+   mgx_seq_zipseq * z = NULL;
+   size_t i;
+
+   z = GDL_CALLOC (mgx_seq_zipseq, 1);
+   
+   z->length = length;
+   z->seq    = gdl_bit_vector_alloc(length*2);
+
+   for(i = 0; i < length; i++) {
+      switch(seq[i]) {
+         case 'A':
+            break;
+         case 'T':
+         case 'U':
+            mgx_seq_zipseq_set(z, i, 'T');
+            break;
+         case 'G':
+            mgx_seq_zipseq_set(z, i, 'G');
+            break;
+         case 'C':
+            mgx_seq_zipseq_set(z, i, 'C');
+            break;
+         case 'N':
+            // A or T or C or G
+            if (gdl_rng_uniform (rng) >= 0.5) { // C or G
+               if (gdl_rng_uniform (rng) >= 0.5) { // G
+                  mgx_seq_zipseq_set(z, i, 'G');
+               } else {
+                  mgx_seq_zipseq_set(z, i, 'C');
+               }
+            } else if (gdl_rng_uniform (rng) >= 0.5) { // T
+               mgx_seq_zipseq_set(z, i, 'T');
+            } else {
+               mgx_seq_zipseq_set(z, i, 'A');
+            }
+            break;
+         case 'R':
+            // A or G
+            if (gdl_rng_uniform (rng) >= 0.5) { // G
+               mgx_seq_zipseq_set(z, i, 'G');
+            } else {
+               mgx_seq_zipseq_set(z, i, 'A');
+            }
+            break;
+         case 'Y':
+            // C or T
+            if (gdl_rng_uniform (rng) >= 0.5) { // C
+               mgx_seq_zipseq_set(z, i, 'C');
+            } else {
+               mgx_seq_zipseq_set(z, i, 'T');
+            }
+            break;
+         case 'S':
+            // G or C
+            if (gdl_rng_uniform (rng) >= 0.5) { // G
+               mgx_seq_zipseq_set(z, i, 'G');
+            } else {
+               mgx_seq_zipseq_set(z, i, 'C');
+            }
+            break;
+         case 'W':
+            // A or T
+            if (gdl_rng_uniform (rng) >= 0.5) { // A
+               mgx_seq_zipseq_set(z, i, 'A');
+            } else {
+               mgx_seq_zipseq_set(z, i, 'T');
+            }
+            break;
+         case 'K':
+            // G or T
+            if (gdl_rng_uniform (rng) >= 0.5) { // G
+               mgx_seq_zipseq_set(z, i, 'G');
+            } else {
+               mgx_seq_zipseq_set(z, i, 'T');
+            }
+            break;
+         case 'M':
+            // A or C
+            if (gdl_rng_uniform (rng) >= 0.5) { // A
+               mgx_seq_zipseq_set(z, i, 'A');
+            } else {
+               mgx_seq_zipseq_set(z, i, 'C');
+            }
+            break;
+         case 'B':
+            // C or G or T
+            if (gdl_rng_uniform (rng) >= 0.33) { // G or T
+               if (gdl_rng_uniform (rng) >= 0.5) {  // G
+                  mgx_seq_zipseq_set(z, i, 'G');
+               } else {
+                  mgx_seq_zipseq_set(z, i, 'T');
+               }
+            } else {
+               mgx_seq_zipseq_set(z, i, 'C');
+            }
+            // C or G or T
+            break;
+         case 'D':
+            // A or G or T
+            if (gdl_rng_uniform (rng) >= 1./3.) { // G or T
+               if (gdl_rng_uniform (rng) >= 0.5) {  // G
+                  mgx_seq_zipseq_set(z, i, 'G');
+               } else {
+                  mgx_seq_zipseq_set(z, i, 'T');
+               }
+            } else {
+               mgx_seq_zipseq_set(z, i, 'A');
+            }
+            break;
+         case 'H':
+            // A or C or T
+            if (gdl_rng_uniform (rng) >= 1./3.) { // C or T
+               if (gdl_rng_uniform (rng) >= 0.5) {  // G
+                  mgx_seq_zipseq_set(z, i, 'C');
+               } else {
+                  mgx_seq_zipseq_set(z, i, 'T');
+               }
+            } else {
+               mgx_seq_zipseq_set(z, i, 'A');
+            }
+            break;
+         case 'V':
+            // A or C or G
+            if (gdl_rng_uniform (rng) >= 1./3.) { // C or G
+               if (gdl_rng_uniform (rng) >= 0.5) {  // G
+                  mgx_seq_zipseq_set(z, i, 'C');
+               } else {
+                  mgx_seq_zipseq_set(z, i, 'G');
+               }
+            } else {
+               mgx_seq_zipseq_set(z, i, 'A');
+            }
+            break;
+         default:
+            // something wrong !!
+            GDL_ERROR_VAL(gdl_string_sprintf("Non IUPAC compliant encoding found: %c\n", seq[i]), GDL_EINVAL, 0);
+            break;
+      }
+   }
+
+   return z;
+}
+
+mgx_seq_fasta * 
+read_fragment_sequences (const gdl_string * fasta_file, const gdl_rng * rng) {
+   mgx_seq_fasta * frag_seqs = NULL;
+   char * seq_buffer;
+   size_t n,nseq=0,seqlen=0,buffer_size=1000;
+   int c;
+   mgxFILE * fh;
+   
+   // First, count the number of sequences
+   nseq = 0;
+   fh   = mgx_fileopen(fasta_file, "r", mgx_getzipmode (fasta_file));
+   while ((c=mgx_getc(fh))!=EOF)
+   {
+      if (c=='>') {
+         nseq++;
+      }
+   }
+   mgx_fileclose (fasta_file, fh);
+
+   // ALLOC
+   frag_seqs = GDL_CALLOC (mgx_seq_fasta, 1);
+   frag_seqs->nseq        = nseq;
+   frag_seqs->seq_labels  = GDL_CALLOC(gdl_string *, nseq);
+   frag_seqs->sequences   = GDL_CALLOC(mgx_seq_zipseq *, nseq); 
+
+   nseq=0;
+   // init the buffer
+   seq_buffer = GDL_CALLOC(char, buffer_size);
+   // Then, load the sequences in zip mode
+   fh = mgx_fileopen(fasta_file, "r", mgx_getzipmode (fasta_file));
+   while ((c=mgx_getc(fh))!=EOF)
+   {
+      if (c=='>')
+      {
+         if (seqlen) {
+            frag_seqs->sequences[nseq++] = mgx_seq_zipseq_create (seq_buffer, seqlen, rng);
+         }
+         mgx_getline (&(frag_seqs->seq_labels[nseq]), &n, fh);
+         seqlen=0;
+      }
+      else if (!isspace(c))
+      {
+	 if (seqlen==buffer_size) // increase the buffer
+	 {
+		char * tmp = GDL_CALLOC (char, 2*buffer_size);
+		memcpy(tmp, seq_buffer, sizeof(char)*buffer_size);
+		GDL_FREE (seq_buffer);
+		seq_buffer=tmp;
+		buffer_size*=2;
+	 }
+	 seq_buffer[seqlen]=toupper(c);
+         seqlen++;
+      }
+   }
+   mgx_fileclose (fasta_file, fh);
+   if (seqlen) { 
+      frag_seqs->sequences[nseq] = mgx_seq_zipseq_create (seq_buffer, seqlen, rng);
+   }
+
+   return frag_seqs; 
+}
+/**
+ * Create a thread object which will take in charge the simulation
+ * for a non-overlapping part of the fragment dataset
+ */
+static mgx_seq_sim_thread_parameter **
+mgx_seq_sim_thread_parameter_alloc ( mgx_seq_sim_config * sim_config,
+	                             mgx_seq_fasta      * fragments,
+	                             const size_t nthread,
+                                     const gdl_string * output)
+{
+   size_t i,j,k;
+   FILE * stream;
+   mgx_seq_sim_thread_parameter ** params;
+
+   params = GDL_CALLOC (mgx_seq_sim_thread_parameter *, nthread);
+
+   j = (fragments->nseq / nthread);
+   k = (fragments->nseq % nthread);
+   for(i = 0; i < nthread; i++)
+   {
+      params[i] = GDL_CALLOC (mgx_seq_sim_thread_parameter, 1);
+      params[i]->idx     = i;
+      params[i]->f_from  = (i > 0) ? params[i-1]->f_to : 0;
+      params[i]->f_to    = params[i]->f_from + j;
+      if (k)
+      {
+         (params[i]->f_to)++;
+         k--;
+      }
+      params[i]->sim_config = sim_config;
+      params[i]->fragments  = fragments;
+      // read buffer
+      if (sim_config->paired) {
+         params[i]->fw_file        = gdl_string_sprintf ("%s_%d_1.fastq", output, i);
+         stream = gdl_fileopen(params[i]->fw_file, "w");
+         gdl_fileclose(params[i]->fw_file, stream);
+         params[i]->fw_read_buffer = gdl_list_alloc (gdl_list_default);
+         params[i]->bw_file        = gdl_string_sprintf ("%s_%d_2.fastq", output, i);
+         stream = gdl_fileopen(params[i]->bw_file, "w");
+         gdl_fileclose(params[i]->bw_file, stream);
+         params[i]->bw_read_buffer = gdl_list_alloc (gdl_list_default);
+      } else {
+         params[i]->fw_file        = gdl_string_sprintf ("%s_%d.fastq", output, i);
+         stream = gdl_fileopen(params[i]->fw_file, "w");
+         gdl_fileclose(params[i]->fw_file, stream);
+         params[i]->fw_read_buffer = gdl_list_alloc (gdl_list_default);
+      }
+      params[i]->log_file = gdl_string_sprintf ("%s_%d.log", output, i);
+      stream = gdl_fileopen(params[i]->log_file, "w");
+      gdl_fileclose(params[i]->log_file, stream);
+   }
+   return params;
+}
+/**
+ * Creates a new read object and returns a pointer 
+ * on it
+ */
+mgx_seq_sim_read * 
+mgx_seq_sim_read_alloc(const size_t length) {
+   mgx_seq_sim_read * r;
+
+   r = GDL_CALLOC (mgx_seq_sim_read, 1);
+ 
+   r->length = length;  
+   r->seq    = GDL_CALLOC (unsigned char, length);
+   r->qual   = GDL_CALLOC (unsigned char, length);
+
+   return r;
+}
+
+void
+mgx_seq_sim_read_free (mgx_seq_sim_read * r) {
+    if (r) {
+       GDL_FREE (r->label);
+       GDL_FREE (r->seq);
+       GDL_FREE (r->qual);
+       GDL_FREE (r->cigar);
+       GDL_FREE (r);
+    }
+}
+/**
+ * Returns 1 if a substitution occurs at position i of the read
+ * according to the input substituttion probability profile
+ */
+size_t
+mgx_seq_sim_has_error(const mgx_seq_sim_config * sim_config, const size_t i, unsigned char * seq_error) {
+    size_t idx = i;
+    if (i >= sim_config->read_max_length) {
+       idx = sim_config->read_max_length - 1;
+    }
+    if (gdl_rng_uniform (sim_config->rng) <= sim_config->err_prob[idx]) {
+       // which kind of error ?
+       double z = gdl_rng_uniform (sim_config->rng);
+       if (z > sim_config->err_type_prob[idx][0]) { // indel
+          if (z > sim_config->err_type_prob[idx][1]) { // deletion
+             *seq_error='d';
+          } else { // insertion
+             *seq_error='i';
+          }
+       } else { // substitution
+          *seq_error='s';
+       }
+       return 1;
+    }
+    return 0;
+}
+/**
+ * Returns the subsituted base
+ */
+unsigned char
+mgx_seq_sim_get_substitution(const mgx_seq_sim_config * sim_config, const unsigned char obase) {
+   size_t k, j = get_base_index(obase);
+   double z = gdl_rng_uniform (sim_config->rng);
+   
+   if (z > sim_config->sub_mat[j][0]) { 
+      if (z > sim_config->sub_mat[j][1]) { 
+         switch(j) {
+            case 3:
+               return 'C';
+            default:
+               return 'G';
+         }
+      } else { 
+         switch(j) {
+            case 0:
+            case 1:
+               return 'C';
+            default:
+               return 'T';
+         }
+      }
+   } else {
+      switch(j) {
+         case 0:
+            return 'T';
+         default:
+            return 'A';
+      }
+   }
+}
+/**
+ * Generate insertion
+ */
+size_t
+mgx_seq_sim_do_insertion (const mgx_seq_sim_config * sim_config, mgx_seq_sim_read * read, const size_t i) {
+   size_t j;
+   // get the length of the insertion
+   size_t ins_length = gdl_ran_discrete (sim_config->rng, sim_config->ins_size_law)+1;
+   size_t new_length = read->length + ins_length;
+   unsigned char * new_seq = GDL_CALLOC (unsigned char, new_length);
+   gdl_string * new_cigar;
+
+   // generate the insertion (simply repeat base i)
+   memcpy(new_seq, read->seq, (i+1)*sizeof(unsigned char));
+   for(j = 1; j <= ins_length; j++) {
+      new_seq[i+j] = read->seq[i];
+   }
+   memcpy(new_seq+(i+j), read->seq+(i+1), (read->length-i-1)*sizeof(unsigned char));
+
+   // re-allocate the read seq & co
+   read->length = new_length;
+   gdl_string_free (read->seq);
+   read->seq  = new_seq;
+   if (read->cigar) {
+      new_cigar = gdl_string_sprintf("%sI%d[%d]", read->cigar, i, ins_length); 
+   } else {
+      new_cigar = gdl_string_sprintf("I%d[%d]", i, ins_length);
+   }
+   GDL_FREE (read->cigar);
+   read->cigar = new_cigar;
+   GDL_FREE (read->qual);
+   read->qual = GDL_CALLOC(unsigned char, read->length);
+
+   return ins_length;
+}
+/**
+ * Generate deletion
+ */
+size_t 
+mgx_seq_sim_do_deletion (const mgx_seq_sim_config * sim_config, mgx_seq_sim_read * read, const size_t i) {
+   if (i == read->length-1) {
+     return 0;
+   }
+   size_t j;
+   // get the length of the deletion
+   size_t del_length = gdl_ran_discrete (sim_config->rng, sim_config->del_size_law)+1;
+   if (i + del_length >= read->length) {
+      del_length = read->length-i-1;
+   }
+   size_t new_length = read->length-del_length;
+   unsigned char * new_seq = GDL_CALLOC (unsigned char, new_length);
+   gdl_string * new_cigar;
+
+   // generate the deletion
+   memcpy(new_seq, read->seq, (i+1)*sizeof(unsigned char));
+   if (i+1 < new_length) {
+      memcpy(new_seq+i+1, read->seq+i+del_length+1, (read->length-i-del_length-1)*sizeof(unsigned char));
+   }
+   // re-allocate the read seq & co
+   read->length = new_length;
+   gdl_string_free (read->seq);
+   read->seq    = new_seq;
+   if (read->cigar) {
+      new_cigar = gdl_string_sprintf("%sD%d[%d]", read->cigar, i, del_length); 
+   } else {
+      new_cigar = gdl_string_sprintf("D%d[%d]", i, del_length);
+   }
+   GDL_FREE (read->cigar);
+   read->cigar  = new_cigar;
+   GDL_FREE (read->qual);
+   read->qual = GDL_CALLOC(unsigned char, read->length);
+
+   return del_length;
+}
+/**
+ * Add sequencing errors to the read
+ */
+void
+apply_sequencing_error (mgx_seq_sim_read * read, const mgx_seq_sim_config * sim_config) {
+   size_t i;
+   unsigned char seq_error;
+   unsigned char sub_base;
+   gdl_string * new_cigar;
+
+   // substitution
+   i=0;
+   while(i < read->length) {
+      if (mgx_seq_sim_has_error(sim_config, i, &seq_error)) {
+         switch (seq_error) {
+            case 's':
+               sub_base = mgx_seq_sim_get_substitution(sim_config, read->seq[i]);
+               if (read->cigar) {
+                  new_cigar = gdl_string_sprintf("%sS%d[%c:%c]", read->cigar, i, read->seq[i], sub_base); 
+               } else {
+                  new_cigar = gdl_string_sprintf("S%d[%c:%c]", i, read->seq[i], sub_base); 
+               }
+               GDL_FREE (read->cigar);
+               read->cigar  = new_cigar;
+               read->seq[i] = sub_base;
+               break;
+            case 'i':
+               i += mgx_seq_sim_do_insertion(sim_config, read, i);
+               break;
+            case 'd':
+               mgx_seq_sim_do_deletion(sim_config, read, i);
+               break;
+         }
+      }
+      i++;
+   }
+}
+
+unsigned char
+mgx_seq_sim_get_quality (const mgx_seq_sim_config * sim_config, const size_t i) {
+   size_t j;
+   if (i >= sim_config->read_max_length) {
+      j = gdl_ran_discrete (sim_config->rng, sim_config->qscore_law[sim_config->read_max_length-1]);
+   } else {
+      j = gdl_ran_discrete (sim_config->rng, sim_config->qscore_law[i]);
+   }
+   return (unsigned char) sim_config->qscores[j];
+}
+/**
+ * Generates the Qscores for a given read
+ */
+void
+generate_qscores (mgx_seq_sim_read * read, const mgx_seq_sim_config * sim_config) {
+   size_t i;
+   for(i = 0; i < read->length; i++) {
+      read->qual[i] = mgx_seq_sim_get_quality(sim_config, i);
+   }
+}
+/**
+ *Push a simulated read into the output buffer (forward)
+ */
+void 
+push_read_forward (mgx_seq_sim_thread_parameter * sim_t, mgx_seq_sim_read * read)
+{
+    gdl_list_push_back (sim_t->fw_read_buffer, read, 0);
+}
+/**
+ *Push a simulated read into the output buffer (backward)
+ */
+void 
+push_read_backward (mgx_seq_sim_thread_parameter * sim_t, mgx_seq_sim_read * read)
+{
+   gdl_list_push_back (sim_t->bw_read_buffer, read, 0);
+}
+/**
+ * Print out a read
+ */
+int
+mgx_seq_sim_read_write(FILE * stream1, FILE * stream2, const mgx_seq_sim_read * read, const size_t read_length)
+{
+   size_t i;
+   // FASTQ FORMAT
+   fprintf(stream1, "@%s\n", read->label);
+   for(i = 0; i < GDL_MIN(read->length, read_length); i++) {
+      fprintf(stream1, "%c", read->seq[i]);
+   }
+   fprintf(stream1, "\n+\n");
+   for(i = 0; i < GDL_MIN(read->length, read_length); i++) {
+      fprintf(stream1, "%c", read->qual[i]);
+   }
+   fprintf(stream1, "\n");
+   // READ CIGAR
+   if (read->cigar) {
+      fprintf(stream2, "%s\t%d\t%s\t%s\n", read->label, GDL_MIN(read->length, read_length), read->cigar, read->frag);
+   } else {
+      fprintf(stream2, "%s\t%d\tno_error\t%s\n", read->label, GDL_MIN(read->length, read_length), read->frag);
+   }
+}
+/**
+ * Write reads to file and clean memory
+ */
+int
+flush_read_buffer (mgx_seq_sim_thread_parameter * sim_t) {
+   gdl_list_itr * itr;
+
+   if (gdl_list_size(sim_t->fw_read_buffer) > 0) {
+      FILE * stream1 = gdl_fileopen (sim_t->fw_file, "a");
+      FILE * stream2 = gdl_fileopen (sim_t->log_file, "a");
+      itr = gdl_list_iterator_front(sim_t->fw_read_buffer);
+      do {
+         mgx_seq_sim_read * read = (mgx_seq_sim_read *) gdl_list_iterator_value(itr);
+         mgx_seq_sim_read_write(stream1, stream2, read, sim_t->sim_config->read_length); // TODO
+         mgx_seq_sim_read_free (read);
+      } while (gdl_list_iterator_next(itr));
+      gdl_list_iterator_free(itr);
+      // close the stream
+      gdl_fileclose (sim_t->fw_file, stream1);
+      gdl_fileclose (sim_t->log_file, stream2);
+      // re-initialize the list
+      gdl_list_free (sim_t->fw_read_buffer);
+      sim_t->fw_read_buffer=gdl_list_alloc(gdl_list_default);
+   }
+   if (sim_t->bw_read_buffer && gdl_list_size(sim_t->bw_read_buffer) > 0)  {
+      FILE * stream1 = gdl_fileopen (sim_t->bw_file, "a");
+      FILE * stream2 = gdl_fileopen (sim_t->log_file, "a");
+      itr = gdl_list_iterator_front(sim_t->bw_read_buffer);
+      do {
+         mgx_seq_sim_read * read = (mgx_seq_sim_read *) gdl_list_iterator_value(itr);
+         mgx_seq_sim_read_write(stream1, stream2, read, sim_t->sim_config->read_length); // TODO
+         mgx_seq_sim_read_free (read);
+      } while (gdl_list_iterator_next(itr));
+      gdl_list_iterator_free(itr);
+      // close the stream
+      gdl_fileclose (sim_t->bw_file, stream1);
+      gdl_fileclose (sim_t->log_file, stream2);
+      // re-initialize the list
+      gdl_list_free (sim_t->bw_read_buffer);
+      sim_t->bw_read_buffer=gdl_list_alloc(gdl_list_default);
+   }
+
+   return GDL_SUCCESS;
+}
+/**
+ * Generate the backward read
+ */
+mgx_seq_sim_read *
+get_read_backward (const mgx_seq_zipseq * zseq, const mgx_seq_sim_config * sim_config) {
+    mgx_seq_sim_read * read = NULL;
+    int i,j;
+    size_t seq_length       = sim_config->read_length;
+
+    if (zseq->length < seq_length) {
+       seq_length = zseq->length;
+    }
+
+    read = mgx_seq_sim_read_alloc (seq_length);
+
+    for(j = 0,i=zseq->length-1; i >= 0 && i >= zseq->length-seq_length;i--,j++) {
+       read->seq[j] = mgx_seq_zipseq_get(zseq, i);
+       switch(read->seq[j]) {
+          case 'A':
+             read->seq[j]='T';
+             break;
+          case 'T':
+             read->seq[j]='A';
+             break;
+          case 'G':
+             read->seq[j]='C';
+             break;
+          case 'C':
+             read->seq[j]='G';
+             break;
+       }
+    }
+
+    return(read);
+}
+/**
+* Generate the forward read
+*/
+mgx_seq_sim_read *
+get_read_forward (const mgx_seq_zipseq * zseq, const mgx_seq_sim_config * sim_config) {
+    mgx_seq_sim_read * read = NULL;
+    size_t i;
+    size_t seq_length       = sim_config->read_length;
+
+    if (zseq->length < seq_length) {
+       seq_length = zseq->length;
+    }
+
+    read = mgx_seq_sim_read_alloc (seq_length);
+
+    for(i = 0; i < seq_length; i++) {
+       read->seq[i] = mgx_seq_zipseq_get(zseq, i);
+    }
+
+    return(read);
+}
+void
+generate_read_label (const mgx_seq_sim_config * sim_config, mgx_seq_sim_read * read, const size_t index, const gdl_string * fwd_label)
+{
+   if (fwd_label) {
+	   if(READ_PREFIX) {
+			read->label = gdl_string_sprintf("%s_READ#%d%s2",READ_PREFIX,index,PAIR_SEP);
+	   } else {
+		   read->label = gdl_string_sprintf("READ#%d%s2",index,PAIR_SEP);
+	   }
+      
+   } else {
+      if (sim_config->paired) {
+		  if(READ_PREFIX) {
+				read->label = gdl_string_sprintf("%s_READ#%d%s1",READ_PREFIX,index,PAIR_SEP);
+		  } else {
+				read->label = gdl_string_sprintf("READ#%d%s1",index,PAIR_SEP);
+		  }
+      } else {
+		  if(READ_PREFIX) {
+				read->label = gdl_string_sprintf("%s_READ#%d",READ_PREFIX,index);
+		  } else {
+				read->label = gdl_string_sprintf("READ#%d",index);
+		  }
+          
+      }
+   }
+}
+/**
+ *  Simulate the reads for a given thread object
+ */
+static void *
+_mgx_seq_sim_single_thread (void * t)
+{
+   size_t i,j,f;
+   int k;
+   mgx_seq_sim_thread_parameter * sim_p = (mgx_seq_sim_thread_parameter *) t;
+
+   for(f = sim_p->f_from; f < sim_p->f_to; f++)
+   {
+       mgx_seq_sim_read * fwd_read = get_read_forward (sim_p->fragments->sequences[f], sim_p->sim_config);
+       fwd_read->frag = sim_p->fragments->seq_labels[f];
+       generate_read_label(sim_p->sim_config, fwd_read, f, NULL);
+       apply_sequencing_error (fwd_read, sim_p->sim_config);
+       generate_qscores (fwd_read, sim_p->sim_config);
+       push_read_forward (sim_p, fwd_read);
+       if (sim_p->sim_config->paired) {
+          mgx_seq_sim_read * bkw_read = get_read_backward (sim_p->fragments->sequences[f], sim_p->sim_config);
+          bkw_read->frag = sim_p->fragments->seq_labels[f];
+          generate_read_label(sim_p->sim_config, bkw_read, f, fwd_read->label);
+          apply_sequencing_error (bkw_read, sim_p->sim_config);
+          generate_qscores (bkw_read, sim_p->sim_config);
+          push_read_backward (sim_p, bkw_read);
+       }
+       if (f % 1000 == 0) { // to be adjusted according to IO & RAM
+          flush_read_buffer (sim_p);
+       }
+   }
+   flush_read_buffer (sim_p);
+
+   pthread_exit((void*) t);
+}
+/**
+ *  Simulate the reads for the complete fragment dataset
+ *  on the given number of threads
+ */
+static int
+mgx_seq_sim_multiple_thread (mgx_seq_sim_config * sim_config,
+	                     mgx_seq_fasta      * fragments,
+	                     const size_t nthread,
+                             const gdl_string * output)
+{
+    size_t t;
+    mgx_seq_sim_thread_parameter ** params;
+    pthread_t * thread = GDL_CALLOC (pthread_t, nthread);
+    pthread_attr_t attr;
+    int rc;
+    void *status;
+
+    params = mgx_seq_sim_thread_parameter_alloc (sim_config, fragments, nthread, output);
+
+    pthread_attr_init(&attr);
+
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_JOINABLE);
+
+    for(t = 0; t < nthread; t++)
+    {
+      rc = pthread_create(&thread[t], &attr, _mgx_seq_sim_single_thread, (void *)params[t]);
+      if (rc)
+      {
+         GDL_ERROR_VAL ("ERROR; return code from pthread_create() is non zero\n", GDL_FAILURE, 0);
+      }
+
+    }
+    /* Free attribute and wait for the other threads */
+    pthread_attr_destroy(&attr);
+
+    for(t = 0; t < nthread; t++)
+    {
+      rc = pthread_join(thread[t], &status);
+      if (rc)
+      {
+         GDL_ERROR_VAL ("ERROR; return code from pthread_join() is non zero\n", GDL_FAILURE, 0);
+      }
+      GDL_FREE (params[t]);
+    }
+
+    GDL_FREE (params);
+
+    return GDL_SUCCESS;
+}
+
+void
+load_read_qscores (mgx_seq_sim_config * sim_conf)
+{
+   size_t i, j;
+   double tot, * prob;
+   FILE * stream;
+   size_t n, ntok;
+   gdl_string * line, ** toks;
+
+   sim_conf->qscore_law = GDL_CALLOC (gdl_ran_discrete_t *, sim_conf->read_max_length);
+
+   i = 0;
+   stream = gdl_fileopen(sim_conf->qual_score_mat, "r");
+   line = NULL;
+   while(gdl_getline (&line, &n, stream)!=-1) {
+      toks = gdl_string_split(line, "\t", &ntok);
+      if (!i) {
+         sim_conf->n_qscore = ntok;
+         sim_conf->qscores  = GDL_CALLOC(unsigned char, sim_conf->n_qscore);
+         for(j = 0; j < ntok; j++) {
+            sim_conf->qscores[j] = (unsigned char) toks[j][0];
+         }
+      } else if (ntok!=sim_conf->n_qscore) {
+	    GDL_ERROR_VOID(gdl_string_sprintf("Bad line format in quality score (expected %d fields but only %d fields are present):\n%s\n",sim_conf->n_qscore, ntok, line),GDL_EINVAL);
+      } else {
+         prob = GDL_CALLOC (double, ntok);
+         tot = 0;
+         for(j = 0; j < ntok; j++) {
+	    prob[j] = (double) atof(toks[j]);
+            tot += prob[j];
+         }
+         for(j = 0; j < ntok; j++) {
+            prob[j] /= tot;
+         }
+         sim_conf->qscore_law[i-1] = gdl_ran_discrete_preproc(ntok, prob);
+         GDL_FREE (prob);
+	 GDL_MATRIX_FREE (toks, ntok);
+      } 
+      i++;
+      gdl_string_free (line);
+      line=NULL;
+   }
+   gdl_fileclose (sim_conf->qual_score_mat, stream);
+   
+}
+
+double ** 
+load_sub_matrix (const gdl_string * file)
+{
+   size_t i,j;
+   double tot, ** mat = GDL_MATRIX_ALLOC (double, 4, 4);
+   FILE * stream;
+   size_t n, ntok;
+   gdl_string * line, ** toks;
+
+   stream = gdl_fileopen(file, "r");
+   line = NULL;
+   while(gdl_getline (&line, &n, stream)!=-1) {
+      toks = gdl_string_split(line, "\t", &ntok);
+      if (ntok!=3) {
+         GDL_ERROR_VAL(gdl_string_sprintf("Bad line format in configuraiton file:\n%s\n",line),GDL_EINVAL,0);
+      }
+      unsigned char obase = (unsigned char) toupper(toks[0][0]);
+      unsigned char sbase = (unsigned char) toupper(toks[1][0]);
+      mat[get_base_index(obase)][get_base_index(sbase)]=(double) atof(toks[2]);      
+      GDL_MATRIX_FREE (toks, 3);
+      gdl_string_free (line);
+      line=NULL;
+   }
+   gdl_fileclose (file, stream);
+
+   
+   for(i = 0; i < 4; i ++) {
+      // first, scale the probabilities
+      tot=0;
+      for(j = 0; j < 4; j++) {
+		 
+        tot+=mat[i][j];
+      }
+	  if (tot > 0.) {
+		  for(j = 0; j < 4; j++) {
+		  mat[i][j] /= tot;
+		  }
+	  }
+   }
+
+   // Now, compute cum prob for each base
+   // A = 0
+   mat[0][0] = mat[0][1];
+   mat[0][1] = mat[0][0]+mat[0][2];
+   // T = 1
+   mat[1][1] = mat[1][0]+mat[1][2];
+   // C = 2
+   mat[2][1] = mat[2][0]+mat[2][1];
+   // G = 3
+   mat[3][1] = mat[3][0]+mat[3][1];
+   
+   return mat;
+}
+
+double * 
+load_read_probs (const gdl_string * file, const size_t max_length)
+{
+   size_t i;
+   double * prob = GDL_CALLOC (double, max_length);
+   FILE * stream;
+   size_t n, ntok;
+   gdl_string * line, ** toks;
+
+   stream = gdl_fileopen(file, "r");
+   line = NULL;
+   while(gdl_getline (&line, &n, stream)!=-1) {
+      toks = gdl_string_split(line, "\t", &ntok);
+      if (ntok!=2) {
+         GDL_ERROR_VAL(gdl_string_sprintf("Bad line format in configuraiton file:\n%s\n",line),GDL_EINVAL,0);
+      }
+      size_t idx = (size_t) atol(toks[0]);
+      if (idx > max_length) {
+         GDL_ERROR_VAL(gdl_string_sprintf("Read position out of range (max = %d) in line:\n%s\n",max_length, line),GDL_EINVAL,0);
+      }
+      prob[idx-1]  = (double) atof(toks[1]);
+      GDL_MATRIX_FREE (toks, 2);
+      gdl_string_free (line);
+      line=NULL;
+   }
+   gdl_fileclose (file, stream);
+   
+   return prob;
+}
+
+gdl_ran_discrete_t * 
+load_read_indel_size (const gdl_string * file)
+{
+   size_t i;
+   FILE * stream;
+   size_t n, ntok, * tmp_size, max_size = 0;
+   double * prob, tot_prob=0;
+   gdl_string * line, ** toks;
+   gdl_ran_discrete_t * law;
+   
+   stream = gdl_fileopen(file, "r");
+   line = NULL;
+   while(gdl_getline (&line, &n, stream)!=-1) {
+      toks = gdl_string_split(line, "\t", &ntok);
+      if (ntok!=2) {
+         GDL_ERROR_VAL(gdl_string_sprintf("Bad line format in configuraiton file:\n%s\n",line),GDL_EINVAL,0);
+      }
+      size_t idx = (size_t) atol(toks[0]);
+      if (idx > max_size) {
+         max_size = idx;
+      }
+      GDL_MATRIX_FREE (toks, 2);
+      gdl_string_free (line);
+      line=NULL;
+   }
+   gdl_fileclose (file, stream);
+
+   prob = GDL_CALLOC (double, max_size);
+
+   stream = gdl_fileopen(file, "r");
+   line = NULL;
+   while(gdl_getline (&line, &n, stream)!=-1) {
+      toks = gdl_string_split(line, "\t", &ntok);
+      if (ntok!=2) {
+         GDL_ERROR_VAL(gdl_string_sprintf("Bad line format in configuraiton file:\n%s\n",line),GDL_EINVAL,0);
+      }
+      size_t idx  = (size_t) atol(toks[0]);
+      prob[idx-1] = (double) atof(toks[1]);
+      tot_prob  += prob[idx-1];
+      GDL_MATRIX_FREE (toks, 2);
+      gdl_string_free (line);
+      line=NULL;
+   }
+   gdl_fileclose (file, stream);
+   // scale prob
+   for(i = 0; i < max_size; i ++) {
+      prob[i] /= tot_prob;
+   }
+   law = gdl_ran_discrete_preproc (max_size, prob);
+   return law;
+}
+
+mgx_seq_sim_config *
+read_configuration_file (const char * input_file) {
+   FILE * stream;
+   size_t i, n, ntok;
+   gdl_string * line, ** toks;
+   mgx_seq_sim_config * sim_conf = NULL;
+   
+   //==
+   // Configuration file
+   //==
+   sim_conf = GDL_CALLOC (mgx_seq_sim_config, 1);
+   stream = gdl_fileopen(input_file, "r");
+   line = NULL;
+   while(gdl_getline (&line, &n, stream)!=-1) {
+      toks = gdl_string_split(line, "=", &ntok);
+      if (ntok ==1 || ntok > 2) {
+         GDL_ERROR_VAL(gdl_string_sprintf("Bad line format in configuraiton file:\n%s\n",line),GDL_EINVAL,0);
+      }
+      if (!strcmp(toks[0], "read_max_length")) {
+         sim_conf->read_max_length = (size_t)atol(toks[1]);
+      } else if (!strcmp(toks[0], "paired")) {
+         sim_conf->paired = (atol(toks[1])==1) ? gdl_true : gdl_false;
+      } else if (!strcmp(toks[0], "sub_error_tab")) {
+         sim_conf->sub_error_tab = toks[1];
+      } else if (!strcmp(toks[0], "sub_error_mat")) {
+         sim_conf->sub_error_mat = toks[1];
+      } else if (!strcmp(toks[0], "ins_error_tab")) {
+         sim_conf->ins_error_tab = toks[1];
+      } else if (!strcmp(toks[0], "ins_error_size")) {
+         sim_conf->ins_error_size = toks[1];
+      } else if (!strcmp(toks[0], "del_error_tab")) {
+         sim_conf->del_error_tab = toks[1];
+      } else if (!strcmp(toks[0], "del_error_size")) {
+         sim_conf->del_error_size = toks[1];
+      } else if (!strcmp(toks[0], "qual_score_mat")) {
+         sim_conf->qual_score_mat = toks[1];
+      } else {
+         GDL_ERROR_VAL(gdl_string_sprintf("Bad line format in configuraiton file:\n%s\n",line),GDL_EINVAL,0);
+      }
+      gdl_string_free (toks[0]);
+      GDL_FREE (toks);
+      gdl_string_free (line);
+      line=NULL;
+   }
+   gdl_fileclose(input_file, stream);
+
+   // load all the configuration files
+   sim_conf->sub_prob = load_read_probs (sim_conf->sub_error_tab, sim_conf->read_max_length);
+   sim_conf->sub_mat  = load_sub_matrix (sim_conf->sub_error_mat);
+   sim_conf->ins_prob = load_read_probs (sim_conf->ins_error_tab, sim_conf->read_max_length);
+   sim_conf->del_prob = load_read_probs (sim_conf->del_error_tab, sim_conf->read_max_length);
+   sim_conf->ins_size_law = load_read_indel_size (sim_conf->ins_error_size);
+   sim_conf->del_size_law = load_read_indel_size (sim_conf->del_error_size);
+   load_read_qscores (sim_conf);
+   // generate the per base global error rate
+   sim_conf->err_prob      = GDL_CALLOC (double, sim_conf->read_max_length);
+   sim_conf->err_type_prob = GDL_MATRIX_ALLOC (double, sim_conf->read_max_length, 2);
+   for(i = 0; i < sim_conf->read_max_length; i++) {
+      sim_conf->err_prob[i] = sim_conf->sub_prob[i] + sim_conf->ins_prob[i] + sim_conf->del_prob[i]; // total error
+      sim_conf->err_type_prob[i][0]=sim_conf->sub_prob[i];
+      sim_conf->err_type_prob[i][1]=sim_conf->err_type_prob[i][0]+sim_conf->ins_prob[i];
+      if (sim_conf->err_type_prob[i][1]+sim_conf->del_prob[i] > 0.) {
+         sim_conf->err_type_prob[i][0]/=(sim_conf->err_type_prob[i][1]+sim_conf->del_prob[i]);
+         sim_conf->err_type_prob[i][1]/=(sim_conf->err_type_prob[i][1]+sim_conf->del_prob[i]);
+      }
+   }
+   return sim_conf;
+}
+
+
+
+static int
+mgx_seq_merge_multiple_thread (mgx_seq_sim_config * sim_config, const size_t nthread,
+                             const gdl_string * output) {
+	size_t t;
+	size_t n;
+	gdl_string * input_file = 0;
+	gdl_string * input_file_1 = 0;
+	gdl_string * input_file_2 = 0;
+	gdl_string * input_file_log = 0;
+	FILE * stream = 0;
+	FILE * stream_1 = 0;
+	FILE * stream_2 = 0;
+	FILE * stream_log = 0;
+	gdl_string * line;
+	
+	if( sim_config-> paired == 1) {
+		input_file_1 = gdl_string_sprintf ("%s_%d_1.fastq", output, 0);
+		input_file_2 = gdl_string_sprintf ("%s_%d_2.fastq", output, 0);
+		stream_1 = gdl_fileopen(input_file_1, "a");
+		stream_2 = gdl_fileopen(input_file_2, "a");
+	} else {
+		input_file_1 = gdl_string_sprintf ("%s_%d.fastq", output, 0);
+		stream_1 = gdl_fileopen(input_file_1, "a");
+	}
+	
+	// opening log file in append mode
+	input_file_log = gdl_string_sprintf ("%s_%d.log", output, 0);
+	stream_log = gdl_fileopen(input_file_log, "a");
+	
+	for(t = 1; t < nthread; t++)
+	{
+		// merging fastq
+		if( sim_config-> paired == 1) {
+			input_file = gdl_string_sprintf ("%s_%d_1.fastq", output, t);
+		} else {
+			input_file = gdl_string_sprintf ("%s_%d.fastq", output, t);
+		}
+		stream = gdl_fileopen(input_file, "r");
+		line = NULL;
+		while(gdl_getline (&line, &n, stream)!=-1) {
+			fprintf(stream_1, "%s\n", line);
+			gdl_string_free (line);
+			line=NULL;
+		}
+		gdl_fileclose(input_file, stream);
+		// deleting current file
+		unlink(input_file);
+		gdl_string_free(input_file);
+		stream = 0;
+		input_file= 0;
+		
+		
+		if( sim_config-> paired == 1) {
+			// reading the second file of the pair and append it to the merge file for pairs2
+			input_file = gdl_string_sprintf ("%s_%d_2.fastq", output, t);
+			stream = gdl_fileopen(input_file, "r");
+			line = NULL;
+			while(gdl_getline (&line, &n, stream)!=-1) {
+				fprintf(stream_2, "%s\n", line);
+				gdl_string_free (line);
+				line=NULL;
+			}
+			gdl_fileclose(input_file, stream);
+			unlink(input_file);
+			gdl_string_free(input_file);
+			stream = 0;
+			input_file= 0;
+		}
+		
+		// merging logs
+		input_file = gdl_string_sprintf ("%s_%d.log", output, t);
+		stream = gdl_fileopen(input_file, "r");
+		line = NULL;
+		while(gdl_getline (&line, &n, stream)!=-1) {
+			fprintf(stream_log, "%s\n", line);
+			gdl_string_free (line);
+			line=NULL;
+		}
+		gdl_fileclose(input_file, stream);
+		unlink(input_file);
+		gdl_string_free(input_file);
+		stream = 0;
+		input_file= 0;
+	}
+	// closing the merged file
+	gdl_fileclose(input_file_log, stream_log);
+	gdl_string_free(input_file_log);
+	stream_log = 0;
+	gdl_fileclose(input_file_1, stream_1);
+	gdl_string_free(input_file_1);
+	stream_1 = 0;
+	if( sim_config-> paired == 1 ) {
+		gdl_fileclose(input_file_2, stream_2);
+		gdl_string_free(input_file_2);
+		stream_2 =0;
+	}
+	
+	return GDL_SUCCESS;
+}
+
+/**
+ * MAIN ROUTINE
+ */
+int main(int argc, char *argv[])
+{
+	int status;
+
+	parse_argument(argc, argv);
+	if (help_flag) {
+           exit(help());
+	}
+
+	status = check_argument();
+
+	if (status == GDL_SUCCESS) 
+        {
+	   gdl_runtime * runtime;
+           // Get the runtime which init
+           // the random generator
+	   runtime = runtime_setup ();
+
+	   // blocking the seed
+		gdl_rng_set (runtime->rng, SEED);
+
+           //
+           //=========== INITIALIZATION ==============
+           //
+           // configuration
+           mgx_seq_sim_config * sim_config = read_configuration_file (INPUT_FILE);
+           sim_config->read_length = READ_LENGTH;
+           sim_config->rng = runtime->rng;
+           // fragment sequences
+           mgx_seq_fasta * fragments = read_fragment_sequences (FRAG_SEQ_FILE, runtime->rng);
+           //
+           //=========== SIMULATION  ==============
+           // 
+           mgx_seq_sim_multiple_thread (sim_config, fragments, N_THREAD, OUTPUT);
+           //
+		   // ========== MERGING FILE IS NECESSARY ======
+		   if(N_THREAD > 1 ) {
+			   mgx_seq_merge_multiple_thread (sim_config, N_THREAD, OUTPUT) ;
+		   }
+           //=========== TERMINATION ==============
+           //
+           // save runtime to record the random generator state
+           runtime_setdown (runtime);    
+      }
+
+      exit(0);
+}

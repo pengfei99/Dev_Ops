@@ -1,0 +1,149 @@
+K 25
+svn:wc:ra_dav:version-url
+V 52
+/svn/genepi/!svn/ver/76/trunk/external/trimAl/source
+END
+utils.cpp
+K 25
+svn:wc:ra_dav:version-url
+V 61
+/svn/genepi/!svn/ver/6/trunk/external/trimAl/source/utils.cpp
+END
+values.h
+K 25
+svn:wc:ra_dav:version-url
+V 60
+/svn/genepi/!svn/ver/6/trunk/external/trimAl/source/values.h
+END
+utils.h
+K 25
+svn:wc:ra_dav:version-url
+V 59
+/svn/genepi/!svn/ver/6/trunk/external/trimAl/source/utils.h
+END
+statisticsGaps.cpp
+K 25
+svn:wc:ra_dav:version-url
+V 70
+/svn/genepi/!svn/ver/6/trunk/external/trimAl/source/statisticsGaps.cpp
+END
+trimal
+K 25
+svn:wc:ra_dav:version-url
+V 59
+/svn/genepi/!svn/ver/76/trunk/external/trimAl/source/trimal
+END
+readal
+K 25
+svn:wc:ra_dav:version-url
+V 59
+/svn/genepi/!svn/ver/75/trunk/external/trimAl/source/readal
+END
+compareFiles.cpp
+K 25
+svn:wc:ra_dav:version-url
+V 68
+/svn/genepi/!svn/ver/6/trunk/external/trimAl/source/compareFiles.cpp
+END
+statisticsGaps.h
+K 25
+svn:wc:ra_dav:version-url
+V 68
+/svn/genepi/!svn/ver/6/trunk/external/trimAl/source/statisticsGaps.h
+END
+similarityMatrix.cpp
+K 25
+svn:wc:ra_dav:version-url
+V 72
+/svn/genepi/!svn/ver/6/trunk/external/trimAl/source/similarityMatrix.cpp
+END
+statisticsFiles.cpp
+K 25
+svn:wc:ra_dav:version-url
+V 71
+/svn/genepi/!svn/ver/6/trunk/external/trimAl/source/statisticsFiles.cpp
+END
+alignment.cpp
+K 25
+svn:wc:ra_dav:version-url
+V 65
+/svn/genepi/!svn/ver/6/trunk/external/trimAl/source/alignment.cpp
+END
+compareFiles.h
+K 25
+svn:wc:ra_dav:version-url
+V 66
+/svn/genepi/!svn/ver/6/trunk/external/trimAl/source/compareFiles.h
+END
+sequencesMatrix.cpp
+K 25
+svn:wc:ra_dav:version-url
+V 71
+/svn/genepi/!svn/ver/6/trunk/external/trimAl/source/sequencesMatrix.cpp
+END
+similarityMatrix.h
+K 25
+svn:wc:ra_dav:version-url
+V 70
+/svn/genepi/!svn/ver/6/trunk/external/trimAl/source/similarityMatrix.h
+END
+statisticsFiles.h
+K 25
+svn:wc:ra_dav:version-url
+V 69
+/svn/genepi/!svn/ver/6/trunk/external/trimAl/source/statisticsFiles.h
+END
+alignment.h
+K 25
+svn:wc:ra_dav:version-url
+V 63
+/svn/genepi/!svn/ver/6/trunk/external/trimAl/source/alignment.h
+END
+main.cpp
+K 25
+svn:wc:ra_dav:version-url
+V 60
+/svn/genepi/!svn/ver/6/trunk/external/trimAl/source/main.cpp
+END
+statisticsConservation.cpp
+K 25
+svn:wc:ra_dav:version-url
+V 78
+/svn/genepi/!svn/ver/6/trunk/external/trimAl/source/statisticsConservation.cpp
+END
+sequencesMatrix.h
+K 25
+svn:wc:ra_dav:version-url
+V 69
+/svn/genepi/!svn/ver/6/trunk/external/trimAl/source/sequencesMatrix.h
+END
+rwAlignment.cpp
+K 25
+svn:wc:ra_dav:version-url
+V 67
+/svn/genepi/!svn/ver/6/trunk/external/trimAl/source/rwAlignment.cpp
+END
+readAl.cpp
+K 25
+svn:wc:ra_dav:version-url
+V 62
+/svn/genepi/!svn/ver/6/trunk/external/trimAl/source/readAl.cpp
+END
+autAlignment.cpp
+K 25
+svn:wc:ra_dav:version-url
+V 68
+/svn/genepi/!svn/ver/6/trunk/external/trimAl/source/autAlignment.cpp
+END
+statisticsConservation.h
+K 25
+svn:wc:ra_dav:version-url
+V 76
+/svn/genepi/!svn/ver/6/trunk/external/trimAl/source/statisticsConservation.h
+END
+makefile
+K 25
+svn:wc:ra_dav:version-url
+V 60
+/svn/genepi/!svn/ver/6/trunk/external/trimAl/source/makefile
+END

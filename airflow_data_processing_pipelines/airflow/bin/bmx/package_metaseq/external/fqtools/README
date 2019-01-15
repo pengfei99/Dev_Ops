@@ -1,0 +1,14 @@
+FQTOOLS
+
+fqtools is a package that provide tools for efficient FASTQ files
+manipulation.
+
+For now, only the following programs are available:
+
+    fqduplicate (duplicate entries finder),
+    fqextract	(entries extractor),
+    fqquality	(quality based filter).
+
+Any remark/suggestion/problem should be reported to the current author
+and maintainer: Nicolas Joly <njoly@pasteur.fr>.
+

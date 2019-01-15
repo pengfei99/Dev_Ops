@@ -1,0 +1,29 @@
+K 25
+svn:wc:ra_dav:version-url
+V 50
+/svn/genepi/!svn/ver/148/trunk/external/SSPACE/bin
+END
+readLibFiles.pl
+K 25
+svn:wc:ra_dav:version-url
+V 66
+/svn/genepi/!svn/ver/148/trunk/external/SSPACE/bin/readLibFiles.pl
+END
+ExtendOrFormatContigs.pl
+K 25
+svn:wc:ra_dav:version-url
+V 75
+/svn/genepi/!svn/ver/148/trunk/external/SSPACE/bin/ExtendOrFormatContigs.pl
+END
+PairingAndScaffolding.pl
+K 25
+svn:wc:ra_dav:version-url
+V 75
+/svn/genepi/!svn/ver/148/trunk/external/SSPACE/bin/PairingAndScaffolding.pl
+END
+mapWithBowtie.pl
+K 25
+svn:wc:ra_dav:version-url
+V 67
+/svn/genepi/!svn/ver/148/trunk/external/SSPACE/bin/mapWithBowtie.pl
+END

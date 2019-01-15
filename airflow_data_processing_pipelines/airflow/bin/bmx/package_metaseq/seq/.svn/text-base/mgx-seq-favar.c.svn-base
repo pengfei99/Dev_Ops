@@ -1,0 +1,267 @@
+/*
+ *  mgx-mfast2ref.c
+ *
+ *  $Author: veyriejb $, $Date: 2011/11/03 12:41:44 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+ /**
+ * \file mgx-mfast2ref.c
+ * \brief This program reports the polymorphisms with respect to
+ *        a given reference sequence from a multiple alignment
+ *        fasta file
+ * \author Jean-Baptiste Veyrieras
+ * \version 1.0
+ * \date November 1 2011
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_list.h>
+#include <gdl/gdl_hash.h>
+
+// mixgenomix header
+#include <utils/gzutil.h>
+
+#include "mixgenomix.h"
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-mfast2ref";
+
+static int help_flag = 0;
+static int verbose_flag = 0;
+
+static gdl_string * INPUT      = NULL;  // name of the input Fasta file
+static gdl_string * REFID      = NULL;  // the identifier of the reference sequence
+
+static struct option long_options[] = {
+/* These options set a flag. */
+{ "help", no_argument, &help_flag, 1 },
+{ "verbose", no_argument, &verbose_flag, 1 },
+{ "brief", no_argument, &verbose_flag, 2 },
+/* These options don't set a flag.
+ We distinguish them by their indices. */
+{ "input", required_argument, 0, 'i' },
+{ "ref", required_argument, 0, 'r' },
+{ 0, 0, 0, 0 } };
+
+static int parse_argument(int argc, char *argv[]) {
+	int c;
+	while (1) {
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+		c = getopt_long(argc, argv, "i:r:", long_options, &option_index);
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+		switch (c) {
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf("option %s", long_options[option_index].name);
+			if (optarg)
+				printf(" with arg %s", optarg);
+			printf("\n");
+			break;
+		case 'i':
+			INPUT = gdl_string_clone(optarg);
+			break;
+		case 'r':
+			REFID = gdl_string_clone(optarg);
+			break;
+		case '?':
+			GDL_ERROR_VAL("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+/**
+ * \fn static int check_argument(void)
+ * \brief This function checks the main function arguments.
+ * \return a success indicator
+ */
+static int check_argument(void) {
+	if (INPUT == 0) {
+		GDL_ERROR_VAL("No input fasta file provided", GDL_FAILURE, 1);
+	}
+	if (REFID == 0) {
+		GDL_ERROR_VAL("No reference identifier provided", GDL_FAILURE, 1);
+	}
+	return GDL_SUCCESS;
+}
+
+/**
+ * \fn static int help(void)
+ * \brief This function prints the help
+ */
+static int help(void) {
+	print_header(PROGRAM);
+	printf("\n");
+	printf("--help\tDisplay a brief help on program usage\n");
+	printf("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf("\n");
+	printf("--input or -i\tAn input fasta file\n");
+	printf("--refid or -r\tThe identifier of the reference sequence\n");
+}
+
+int main(int argc, char *argv[])
+{
+	int status;
+	parse_argument(argc, argv);
+	if (help_flag) {
+		exit(help());
+	}
+
+	status = check_argument();
+
+	if (status == GDL_SUCCESS)
+        {
+                int c;
+		size_t i, j, n, maxlen, reflen = 0, buffer_size=1000;
+		gdl_string * tok = 0, * refseq = 0;
+		mgxFILE * fh;
+
+		// Read the sequence fasta file
+		if (verbose_flag)
+		{
+			fprintf(stderr, "[mgx-mfast2ref] open the file %s\n", INPUT);
+		}
+		fh = mgx_fileopen(INPUT, "r", mgx_getzipmode (INPUT));
+		if (verbose_flag)
+		{
+			fprintf(stderr, "[mgx-mfast2ref] find the reference sequence %s\n", REFID);
+		}
+		maxlen = strlen(REFID);
+		while ((c=mgx_getc(fh))!=EOF)
+		{
+			if (c=='>')
+			{
+				if (refseq)
+				{
+					break;
+				}
+				tok = gdl_string_alloc(maxlen);
+				c   = mgx_getc(fh);
+				for(i=0;i<maxlen && (!isspace(c) && c!=EOF);i++,c=mgx_getc(fh))
+				{
+					tok[i]=c;
+				}
+				if (!strcmp(tok, REFID))
+				{
+					refseq = GDL_CALLOC (char, buffer_size);
+                                        if (verbose_flag)
+					{
+						fprintf(stderr, "[mgx-mfast2ref] found reference sequence %s\n", tok);
+					}
+				}
+				gdl_string_free(tok);
+                                while(c!=EOF && c!='\n')
+                                {
+                                   c=mgx_getc(fh);
+                                }
+			}
+			else if (!isspace(c) && refseq)
+			{
+				if (reflen == buffer_size) // increase the buffer
+				{
+					char * tmp = GDL_CALLOC (char, 2*buffer_size);
+					memcpy(tmp, refseq, sizeof(char)*buffer_size);
+					GDL_FREE (refseq);
+					refseq=tmp;
+					buffer_size*=2;
+				}
+				refseq[reflen++]=c;
+			}
+		}
+                // matrix to store the occurences of events 
+                // 0 = '-'
+                // 1 = 'a'
+                // 2 = 't'
+                // 3 = 'g'
+                // 4 = 'c'
+                // 5 = other
+                // so seq_events[i] provides the event summary at position i ;-)
+                size_t ** seq_events = GDL_MATRIX_ALLOC (size_t, reflen, 6);
+		if (verbose_flag)
+		{
+			fprintf(stderr, "[mgx-mfast2ref] reference sequence length=%ld\n", reflen);
+		}
+		mgx_fileclose (INPUT, fh);
+                // Read again the sequence fasta file
+                if (verbose_flag)
+                {
+                        fprintf(stderr, "[mgx-mfast2ref] re-open the file %s\n", INPUT);
+                }
+                fh = mgx_fileopen(INPUT, "r", mgx_getzipmode (INPUT));
+                while ((c=mgx_getc(fh))!=EOF)
+                {
+                        if (c=='>')
+                        {
+                            i=0;
+                            while(c!=EOF && c!='\n')
+                            {
+                               c=mgx_getc(fh);
+                            }
+
+                        }
+                        else if (!isspace(c)) 
+                        {
+                            if (i >= reflen)
+                            {
+                               GDL_ERROR_VAL ("[mgx-mfast2ref] ERROR - all sequences must have the same length\n", GDL_FAILURE, GDL_FAILURE);
+                            }
+			    switch(tolower(c))
+			    {
+				 case '-':
+				    seq_events[i][0]++;
+				    break;
+				 case 'a':
+				    seq_events[i][1]++;
+				    break;
+				 case 't':
+				    seq_events[i][2]++;
+				    break;
+				 case 'g':
+				    seq_events[i][3]++;
+				    break;
+				 case 'c':
+				    seq_events[i][4]++;
+				    break;
+				 default:
+				    seq_events[i][5]++;
+				    break;
+			    }
+                            i++;
+                        }
+                }
+                mgx_fileclose (INPUT, fh);
+                fprintf(stdout, "position ref - a t g c *\n");
+                for(i=0;i<reflen;i++)
+                {
+                    fprintf(stdout, "%ld %c", i+1, refseq[i]);
+                    for(j=0;j<6;j++) fprintf(stdout, " %ld",  seq_events[i][j]);
+                    fprintf(stdout, "\n");
+                }
+	} 
+
+	exit(0);
+}

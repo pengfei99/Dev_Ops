@@ -1,0 +1,255 @@
+/*
+ *  mgx-seq-fqmv.c
+ *
+ *  $Author: tournoum $, $Date: 2012/02/07 17:19:34 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+ /**
+ * \file mgx-seq-fqmv.c
+ * \brief This program reads a fastq file and a file with new names (same order as in the fastq file) and rename the sequences with the names provided in the file with the new names
+ * \author Maud Tournoud
+ * \version 1.0
+ * \date September 2015
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_list.h>
+#include <gdl/gdl_hash.h>
+
+#include "mixgenomix.h"
+#include "gzutil.h"
+#include <ext/kseq/kseq.h>
+KSEQ_INIT(gzFile, gzread);
+
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-seq-fqmv";
+
+static int help_flag = 0;
+static int verbose_flag = 0;
+static int comment_flag = 0;
+static gdl_string * INPUT     = NULL;  // name of the input Fastq file
+static gdl_string * NAME    = NULL;  // file with the new names
+static gdl_string * OUTPUT    = NULL;  // outcome file for the fastq with renamed sequences
+static struct option long_options[] = {
+/* These options set a flag. */
+{ "help", no_argument, &help_flag, 1 },
+{ "verbose", no_argument, &verbose_flag, 1 },
+{ "brief", no_argument, &verbose_flag, 2 },
+{ "comment", no_argument, &comment_flag, 1 },
+/* These options don't set a flag.
+ We distinguish them by their indices. */
+{ "input", required_argument, 0, 'i' },
+{ "seq-name", required_argument, 0, 'n' },
+{ "output", required_argument,0,'o'},
+{ 0, 0, 0, 0 } };
+
+static int parse_argument(int argc, char *argv[]) {
+	int c;
+	while (1) {
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+		c = getopt_long(argc, argv, "i:n:o:", long_options, &option_index);
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+		switch (c) {
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf("option %s", long_options[option_index].name);
+			if (optarg)
+				printf(" with arg %s", optarg);
+			printf("\n");
+			break;
+		case 'i':
+			INPUT = gdl_string_clone(optarg);
+			break;
+		case 'n':
+			NAME = gdl_string_clone(optarg);
+			break;
+		case 'o':
+			OUTPUT = gdl_string_clone(optarg);
+			break;
+		case '?':
+			GDL_ERROR_VAL("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+/**
+ * \fn static int check_argument(void)
+ * \brief This function checks the main function arguments.
+ * \return a success indicator
+ */
+static int check_argument(void) {
+	if (INPUT == 0) {
+		GDL_ERROR_VAL("No input fastq file provided", GDL_FAILURE, 1);
+	}
+	if (OUTPUT == 0) {
+		GDL_ERROR_VAL("No output fastq file provided", GDL_FAILURE, 1);
+	}
+	if (NAME == 0) {
+		GDL_ERROR_VAL("No file with new names provided", GDL_FAILURE, 1);
+	}
+	return GDL_SUCCESS;
+}
+
+/**
+ * \fn static int help(void)
+ * \brief This function prints the help
+ */
+static int help(void) {
+	print_header(PROGRAM);
+	printf("\n");
+	printf("--help\tDisplay a brief help on program usage\n");
+	printf("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf("\n");
+	printf("--input or -i\tAn input fastq file\n");
+	printf("--seq-name or -n\tA file providing the new sequences names, in the same ordering of the sequences in the input fastq file. The new names should not stard with > or @, these symbols will be automatically added\n");
+	printf("--output or -o\tAn output fastq file\n");
+	printf("--comment\tAdd the old name+comment of the sequence in the new comment field\n");
+
+}
+
+
+
+int main(int argc, char *argv[])
+{
+	int status;
+	parse_argument(argc, argv);
+	if (help_flag) {
+		exit(help());
+	}
+
+	status = check_argument();
+	if (status == GDL_SUCCESS) 
+        {
+	   gzFile fp;
+	   kseq_t *seq;
+		// open the fastq file and initialize seq
+	   fp = gzopen(INPUT, "r");
+	   seq = kseq_init(fp);
+	   // open the output file
+	   FILE * streamOut;
+	   streamOut = gdl_fileopen (OUTPUT, "w");
+		// open the file with new names
+		FILE * stream;
+		stream = gdl_fileopen (NAME, "r");
+		gdl_string    * line = 0;
+		size_t n=0, i, j, ii, jj;
+		gdl_string * new_name = 0;
+		gdl_string * name_comment = 0;
+		size_t cptr = 0;
+	   while (kseq_read(seq) >= 0)
+	   { 
+			cptr = cptr + 1;
+			if (cptr % 10000 == 0)
+				printf("Number of sequences: %d\n", cptr);
+			
+			//printf("seqname: %s\n",seq->name.s);
+			
+			gdl_getline (&line, &n, stream);
+			i=j=0;
+			new_name = gdl_string_next_token (line, n, &i, &j);
+			//printf("new name: %s\n",new_name);
+			
+			if(comment_flag) {
+				name_comment = gdl_string_alloc(strlen(seq->name.s) + 1 + strlen(seq->comment.s)); //name_comment contains the old name and comment, that will be stored in the comment if flag_commet
+				strcpy(name_comment,seq->name.s);
+				strcat(name_comment," ");
+				strcat(name_comment,seq->comment.s);
+				//free(seq->comment.s); // removing ancient comment and replace by name_comment
+				//seq->comment.s=name_comment;			
+				//printf("new comment %s\n",seq->comment.s);
+
+			}
+			//printf("replacing old name: %s by new name %s\n",seq->name.s,new_name);
+			//printf("old name length:%d\t",seq->name.l);
+			
+			
+			//free(seq->name.s);
+			//seq->name.s = new_name;
+			//seq->name.l = seq->name.m = strlen(new_name);
+			//printf("new name length:%d\n",seq->name.l);
+		
+			if (seq->qual.l)
+		    {
+				fprintf(streamOut,"@");   
+			} else {
+				fprintf(streamOut,">"); 
+			}
+			
+			fprintf(streamOut,"%s", new_name);   
+			if(comment_flag) {
+				fprintf(streamOut," %s",name_comment);
+			}
+			fprintf(streamOut,"\n");
+		
+			// writing fasta sequences with 60 characters per line
+			if(seq->qual.l) {
+				fprintf(streamOut,"%s\n", seq->seq.s);   
+			} else { 
+				ii=0;
+				jj=0;
+				size_t seq_length=0;
+				size_t max_size=60;
+				gdl_string * seq_buff;
+				//printf (">%s\n", seq->name.s);
+				seq_length=strlen(seq->seq.s);
+				if (seq_length > max_size) {
+                       seq_buff = gdl_string_alloc (max_size);
+                       for(ii=jj=0;ii<seq_length/max_size;ii++,jj+=max_size) { 
+                          memcpy(seq_buff, seq->seq.s+jj, sizeof(char)*max_size);
+                          fprintf(streamOut,"%s\n", seq_buff);
+                       }
+                       if (jj < seq_length) {
+                          fprintf(streamOut,"%s\n", seq->seq.s+jj);
+                       }
+                       gdl_string_free (seq_buff);
+                    } else {
+                       fprintf(streamOut,"%s\n", seq->seq.s);     
+                    }
+			}
+			
+			if (seq->qual.l)
+		    {
+		      fprintf (streamOut,"+\n");
+		      fprintf (streamOut,"%s\n", seq->qual.s);
+		    }
+			
+			free(line);
+			line=0;
+			
+			free(new_name);
+			new_name=0;
+	   }
+	   kseq_destroy(seq);
+	   gzclose(fp);
+	   gdl_fileclose (NAME, stream);
+	   gdl_fileclose(OUTPUT, streamOut);
+      }
+	  
+      exit(0);
+}

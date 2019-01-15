@@ -1,0 +1,1151 @@
+/*
+ *  mgx-bams2bh.c
+ *
+ *  $Author: tournoum $, $Date: 2011/12/01 09:24:13 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+/**
+ * \file mgx-bams2bh.c
+ * \brief This program reports the best gi (genome id) from a list of BAM files obtained with bwa or tmap.
+ *  When there are several hits, the program outputs the hits with the minimal edit distance (stored in the NM field).
+ * \author Maud Tournoud
+ * \version 1.1
+ * \date 2012 11
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_list.h>
+#include <gdl/gdl_hash.h>
+
+// mixgenomix headers
+#include <ext/bam/sam.h>
+#include <utils/gzutil.h>
+
+#include "mixgenomix.h"
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-bams2bh";
+
+static int help_flag = 0;
+static int verbose_flag = 0;
+static int full_hit_name_flag = 0;// if flag set to 1, do not try to parse the hit name to retrieve the gi
+static int compare_match_minus_ed_flag=0; // if flag set to 1 use the number of matches - edit distance otherwise identify the best hit based on the edit distance only
+
+
+static gdl_string * INPUT = NULL; // name of the input file with path of the BAM files to reads
+static gdl_string * INPUT_READ_NAME = NULL; // name of the input file that contains the names of the reads
+static gdl_string * OUTPUT = NULL; // name of the file to save the gi of the hits
+static gdl_string * SEPARATOR_PAIRED_READS = NULL; // separator for the paired reads names; usually "/", ie. nameOfPair/1 and nameOfPair/2
+static int DELTA_ED =0; // we retrieve only the hits with best scores
+static int ALT       = 0; // find best hits among alternative alignment
+static gdl_string * ALT_FIELD = 0 ;
+
+ 
+static double PROP_ED = -1; // the variable indicates the proportion of the best scores (only used if we compare the number of matches minus ed) that are accepted as best hit. For 
+						// example, if the maximum # of matches minus ED and PROP-ED equal to 0.2, all the # of matches minus ED > 80 will be considered as best hit.
+//static int MODE       = 0; // best hits for each read
+
+static struct option long_options[] = {
+/* These options set a flag. */
+{ "help", no_argument, &help_flag, 1 },
+{ "verbose", no_argument, &verbose_flag, 1 },
+{"full-hit-name",no_argument, &full_hit_name_flag, 1},
+{"compare-match-minus-ed",no_argument, &compare_match_minus_ed_flag, 1},
+/* These options don't set a flag.
+ We distinguish them by their indices. */
+{ "output", required_argument, 0, 'o' },
+{ "input", required_argument, 0, 'i' },
+{ "read", required_argument, 0, 'r' },
+{"alt",   required_argument, 0, 'a'},
+{"delta-ed",required_argument, 0, 'd'},
+{ "sep-pairs", required_argument, 0, 's' },
+{ "prop-mmed", required_argument, 0, 'p' },
+{ "alt-field", required_argument, 0, 'f' },
+{ 0, 0, 0, 0 } };
+/**
+ * \fn static int parse_argument(int argc, char *argv[])
+ * \brief This function parses the function arguments.
+ *
+ * \param argc
+ * \param argv
+ * \return a success indicator
+ */
+static int parse_argument(int argc, char *argv[]) {
+	int c;
+	while (1) {
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+		c = getopt_long(argc, argv, "i:o:r:a:d:p:s:f:", long_options, &option_index);
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+		switch (c) {
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf("option %s", long_options[option_index].name);
+			if (optarg)
+				printf(" with arg %s", optarg);
+			printf("\n");
+			break;
+		case 'i':
+			INPUT = gdl_string_clone(optarg);
+			break;
+		case 'o':
+			OUTPUT = gdl_string_clone(optarg);
+			break;
+		case 'r':
+			INPUT_READ_NAME = gdl_string_clone(optarg);
+			break;
+		case 'a':
+			ALT= (int) atoi (optarg);
+			break;
+		case 'd':
+			DELTA_ED= (int) atoi (optarg);
+			break;
+		case 'p':
+			PROP_ED= (float) atof (optarg);
+			break;
+		case 's':
+			SEPARATOR_PAIRED_READS = gdl_string_clone(optarg);
+			break;
+		case 'f':
+			ALT_FIELD = gdl_string_clone(optarg);
+			break;
+		case '?':
+			GDL_ERROR_VAL("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+/**
+ * \fn static int check_argument(void)
+ * \brief This function checks the main function arguments.
+ * \return a success indicator
+ */
+static int check_argument(void) {
+	if (INPUT == 0) {
+		GDL_ERROR_VAL("No input file provided", GDL_FAILURE, 1);
+	}
+	if (INPUT_READ_NAME == 0) {
+		GDL_ERROR_VAL("No input file with read names provided", GDL_FAILURE, 1);
+	}
+	if (OUTPUT == 0) {
+		GDL_ERROR_VAL("No output file provided", GDL_FAILURE, 1);
+	}
+	if (PROP_ED > 1) {
+		GDL_ERROR_VAL("prop-mmed should be between 0 and 1; it represents a relative proportion", GDL_FAILURE, 1);
+	}
+	return GDL_SUCCESS;
+}
+
+/**
+ * \fn static int help(void)
+ * \brief This function prints the help
+ */
+static int help(void) {
+	print_header(PROGRAM);
+	printf("\n");
+	printf("--help\tDisplay a brief help on program usage\n");
+	printf(
+			"--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf("\n");
+	printf(
+			"--input or -i\tA file with the paths of the BAM files to parse and merge; BAM files MUST BE SORTED (use samtools merge -n) in the same order of the read names (option -r)\n");
+	printf("\n");
+	printf("--read or -r\tA file with the names of the reads\n");
+	printf("\n");
+	printf(
+			"--output or -o\tA file to save the best hits; 2 columns : column 1 = name of the reads, column 2 = best hits separated by ';'\n");
+	printf("\n");
+	printf(
+			"--alt or -a\tA If set to 1, the function looks for alternatvive hits in the XA field (useful for alignments obtained with bwa)\n");
+	printf("\n");
+	printf(
+			"--sep-pairs or -s\tA separators used for the pairs of reads, usually '.' or '/' \n");
+	printf("\n");
+	printf(
+			"--delta-ed or -d\t The function considers as good hits, hits with edit distance (resp. number of matches minus edit distance) less (resp. greater) than min (resp. max) edit distance (resp. number of matches minus edit distance) + (resp. - ) delta ed   \n");
+	printf("\n");
+	printf(
+			"--full-hit-name \t if this flag is used, the function does not try to parse the hit name to retrieve the gi (useful for NCBI reference genomes) \n");
+	printf("\n");
+	printf(
+			"--compare-match-minus-ed \t if this flag is used, the alignment are compared based on the number of matches in the CIGAR minus the edit distance (instead of the edit distance alone) \n");
+	printf("\n");
+	printf(
+			"--prop-mmed or -p \t The function calculates the relative proportion prop-mmed of the maximal Number of Matches Minus Edit Distance (max NMMED) and considers hits with NMMED such that (max NMMED - NMMED) <= 0.5 max NMED as good hits\n");
+
+}
+
+/**
+ * \fn static char * get_prefix(char * qname)
+ * \brief This function returns the prefix of a query read, given a pairsSeparator string
+ * \param qname name of the read to be evaluated. The format of the read name should be: "prefix[pairsSeparator]suffix"
+ * \param pairsSeparator separator used to defined the prefix.
+ * \return the prefifx of the query read
+ */
+char * get_prefix(char * qname, const gdl_string * pairsSeparator) {
+	int i;
+	size_t n = strlen(qname);
+	for (i = n - 1; i >= 0; i--) {
+		if (qname[i] == pairsSeparator[0]) {
+			break;
+		}
+	}
+	gdl_string * prefix = gdl_string_alloc(i);
+	prefix = strncpy(prefix, qname, i);
+	return prefix;
+}
+
+/**
+ * \fn static int check_name_or_prefix(const gdl_string * qname, gdl_string ** prefix, int checkPrefix, const gdl_string * pairsSeparator
+ * \brief This function checks whether the prefix of read identified by its qname and the current prefix name are the same.
+ * It can also checks whether the read name identified by qname and the current read name are equal.
+ *
+ * \param qname name of the read to be evaluated. The format of the read name should be: "prefix pairsSeparator suffix"
+ * \param prefix current prefix or entire current read name; to be compared to the prefix of the read name
+ * to the read name directly in case checkPrefix = 0
+ * \param checkPrefix:  if 1 the function will compare the prefix of qname and prefix, otherwise, it will
+ * compare qname and prefix directly.
+ * \param pairsSeparator separator used to defined the prefix.
+ * \return a success indicator. If the prefix of the qname (or qname itself) equals to the prefix, the function returns 0 and the pointer is not modified.
+ * If the predix of the read and the prefix are different, the function returns 1 else the function returns 0
+ */
+int check_name_or_prefix(const gdl_string * qname, gdl_string * prefix,
+		int checkPrefix, const gdl_string * pairsSeparator) {
+	size_t n = strlen(qname);
+	int i, j;
+
+	if (checkPrefix == 1) {
+		// Look for the first pairsSeparator starting from the end
+		for (i = n - 1; i >= 0; i--) {
+			if (qname[i] == pairsSeparator[0]) {
+				break;
+			}
+		}
+	} else
+		i = n;
+	if (prefix != 0) {
+		// compare the 2 strings: *prefix and qname up to character i
+		// a 0 value indicates that the characters compared in both strings are equal
+		if (!strncmp(prefix, qname, i) && strlen(prefix) == i) {
+			return 0;
+		} else {
+			return 1;
+		}
+	} else {
+		GDL_ERROR_VAL("check name or prefix => pointeur null", GDL_FAILURE, 1);
+	}
+}
+
+
+
+/**
+ * \fn char * get_bestHitGI(const char * bestHitName, char * result)
+ * \brief This function extracts the gi from the best hit name. The bestHitName is assumed to have the following format:
+ * gi|218888746|ref|NC_011770.1|. So the gi is between the first | and the second  | .
+ *
+ * \param bestHitName bestHitName from which to extract the gi. The format of the bestHitName is: "gi|218888746|ref|NC_011770.1|".
+ * \param result pointer to the gi
+ * \return the modified pointer to the gi
+ */
+
+// we assume that the bestHitName has the following format: gi|218888746|ref|NC_011770.1|
+char * get_bestHitGI(char * bestHitName, char * result) {
+
+	if (full_hit_name_flag) {
+		result = gdl_string_alloc(strlen(bestHitName));
+		strcpy(result, bestHitName);
+		return result;
+	}
+	// look for the 2 | separators
+	int n = strlen(bestHitName);
+	int i = 0;
+	int firstSep = 0;
+	int secondSep = 0;
+	char * tmp = bestHitName;
+	int giLength = 0;
+
+	// looking for the first separator
+	for (i = 0; i < n; i++) {
+		if (bestHitName[i] == '|') {
+			break;
+		}
+	}
+	firstSep = i;
+	// sanity check
+	if (firstSep == (n - 1)) {
+		fprintf(
+				stdout,
+				"error in get_bestHitGI for bestHitName %s : cannot find first separator | \n",
+				bestHitName);
+		return (0);
+	}
+
+	// looking for the second separator
+	for (i = (firstSep + 1); i < n; i++) {
+		if (bestHitName[i] == '|') {
+			break;
+		}
+	}
+	secondSep = i;
+	// sanity check
+	if (secondSep == (n - 1)) {
+		fprintf(
+				stdout,
+				"error in get_bestHitGI for bestHitName %s : cannot find second separator | \n",
+				bestHitName);
+		return (0);
+	}
+
+	giLength = secondSep - firstSep - 1;
+	if (result != 0) {
+		GDL_FREE(result);
+	}
+	result = gdl_string_alloc(giLength);
+	tmp = bestHitName + firstSep + 1;
+	strncpy(result, tmp, giLength);
+	return result;
+}
+
+/**
+ * \fn int get_ed(const char * alt_1)
+ * \brief This function extracts the edit distance (ed) from a single alternative hit (eg. from the field XA). The alternative hit
+ * is assumed to have the following format: Zgi|218888746|ref|NC_011770.1|,-1226123,100M,3 for XA or XP:Z:bmx_NucleicFeature_64519,+81,269S32M,0,1; for XP. The edit distance to be extracted
+ * is the last figure  (in this case posNM =1 ) or 1 before last (in this case posNM = 2). The function looks for the first "," character starting from the end of the alt_1 argument. Then, it outputs
+ * the characters from the "," to the end (assuming it is an integer, see alt_1 format for details). BUT in practice, we observe than even  in the XP field the NM is in the last position, contrary to what is written in the doc.
+ *
+ * \param alt_1 alternative hit (see above for format description)
+ * \param posNM position of the NM field from the end 1 for XA and 2 for XP
+ * \return the edit distance
+ */
+
+int get_ed(const char * alt_1, int posNM) {
+	int i = 0;
+	int j = 0;
+	int ed = 0;
+	int n = strlen(alt_1);
+	int end = n;
+	int nbComma = 0;
+	int posComma1 = 0;
+	
+	if(posNM != 1 && posNM !=2) {
+		GDL_ERROR_VAL("Not taken into account", GDL_FAILURE, 1);
+	}
+		// find the first "," from the end of alt_1
+	for (i = n - 1; i >= 0; i--) {
+		if (alt_1[i] == ',') {
+			nbComma = nbComma +1 ;
+			if (posNM == 1 & nbComma == 1) {
+				if (i == n - 1)
+					end = i;
+				else
+					break;
+			} else {
+				if (nbComma == 1) {
+					posComma1 = i;
+				} else
+					break;
+			}
+		}
+	}
+
+	char * charED = 0;
+	if(posNM == 1) { // I preferred to preserve the previous code
+		charED = gdl_string_alloc(end);
+		charED = strncpy(charED, alt_1 + i + 1, end);
+	} else {
+		int start = i+1;
+		int lengthNM = posComma1 - start;
+		charED = gdl_string_alloc(end);
+		for(j=0; j<lengthNM; j++) {
+			charED[j]=alt_1[start+j];
+		}
+	}
+
+	ed = atoi(charED);
+	GDL_FREE(charED);
+	return ed;
+}
+
+/**
+ * \fn int get_nbMCIGAR(gdl_string * CIGARline)
+ * \brief This function extracts the number of 'M' character from a CIGAR string
+ * \param CIGARline CIGAR string, eg: 100M
+ * \return the number of 'M' character in the CIGAR string
+ */
+int get_nbMCIGAR(gdl_string * CIGARline)
+{
+	size_t s, prev=0;
+	gdl_string * substr;
+	int totalM=0;
+	for(s=0; s< strlen(CIGARline); s++)
+	{
+		if (isalpha(CIGARline[s])) {
+			if(CIGARline[s] =='M')
+			{
+				substr=strndup(CIGARline+prev, s-prev);
+				prev=s+1;
+				totalM=totalM + atoi(substr);
+				gdl_string_free(substr);
+				
+			}
+			else
+			{
+				prev=s+1;
+			}
+		} else if (isdigit(CIGARline[s])) {
+			//puts("it's a digit");
+		} else {
+			exit(1);
+		}
+		
+	}
+	return(totalM);
+}
+
+/**
+ * \fn int get_nbMCIGAR_fromAlt(const char * alt_1)
+ * \brief This function extracts the number of M character found in a CIGAR string from a single alternative hit (eg. from the field XA, or the XP field). The alternative hit
+ * is assumed to have the following format: Zgi|218888746|ref|NC_011770.1|,-1226123,100M,3 for XA (posCigar = 2) or XP:Z:bmx_NucleicFeature_64519,+81,269S32M,0,1; (posCigar=3 for XP) The CIGAR to be extracted
+ * is between the n and n-1 comma. The function looks for the string between the first "," and the second character starting from the end of the alt_1 argument. Then, it outputs
+ * the characters from the number of M in the CIGAR calling the function get_nbMCIGAR.
+ *
+ * \param alt_1 alternative hit (see above for format description)
+ * \return the number of M in the CIGAR string
+ */
+int get_nbMCIGAR_fromAlt(const char * alt_1, int posCigar) {
+	int i = 0;
+	int n = strlen(alt_1);
+	int nComma = 0; // number of comma read from the end of alt_1
+	int comma1 = 0; // position of the last comma from the end of alt_1
+	int comma2 = 0; // position of the second comma from the end of alt_1
+	int comma3 = 0; // position of the third comma from the end of alt_1
+	int nbM  =0;
+	if(posCigar != 2 && posCigar !=3) {
+		GDL_ERROR_VAL("get_nbMCIGAR_fromAlt :: Not taken into account", GDL_FAILURE, 1);
+	}
+	
+	// find the position of the first and second comma from the end of alt_1
+	for (i = n - 1; i >= 0; i--) {
+		if (alt_1[i] ==',' )
+		{
+			// reading first comma from the end
+			if (nComma == 0)
+			{
+				comma1 = i;
+				nComma = nComma + 1; 
+			}
+			else if (nComma ==1)
+			{
+				comma2  = i;
+				nComma = nComma + 1;
+			}
+			else if (nComma == 2)
+			{
+				comma3 = i;
+				nComma = nComma +1;
+			}
+			else
+			{
+				break;
+			}
+		}
+	}
+	char * charCIGAR = 0;
+	charCIGAR = gdl_string_alloc(n);
+	if(posCigar ==2 ) {
+		charCIGAR = strncpy(charCIGAR, alt_1 + comma2 + 1, comma1 - comma2 - 1);
+	} else {
+		charCIGAR = strncpy(charCIGAR, alt_1 + comma3 + 1, comma2 - comma3 - 1);
+	}
+	nbM = get_nbMCIGAR(charCIGAR);
+	GDL_FREE(charCIGAR);
+	return(nbM);
+}
+/**
+ * \fn gdl_list* splitAltHit(char *alt, gdl_list * listGoodGI, int bestHitED)
+ * \brief This function extracts the gi of the best alternative hits. Best alternative hits should have an edit distance
+ * inferior or equal to the edit distance of the best hit.
+ * ex of XA:Z:gi|148826757|ref|NC_009567.1|,+631000,100M,0;gi|16271976|ref|NC_000907.1|,+174225,100M,0;gi|319896422|ref|NC_014920.1|,+1903556,100M,0;gi|162960935|ref|NC_007146.2|,+236254,100M,1;
+ * If the fied is XP, it can be different: XP:Z:bmx_NucleicFeature_64519,+81,269S32M,0,1; (the two last field are NM and mapQ)
+ * \param alt alternative hits. Alternative hits are retrieved from the field XA and are separated by a ";": eg 
+ * \param listGoodGI a pointer to the list of gi for the best alternative hits that should be returned.
+ * \param bestHitED edit distance of the best hit
+ *  \param compareMminusED if 0, compare the alignment based on the edit distance; if 1 compare the alignments based on a score = number of matches in the CIGAR - Edit distance
+ 
+ * \return a pointer to the list of gi for the best alternative hits.
+ */
+gdl_list*
+splitAltHit(char *alt, gdl_list * listGoodGI, int bestHitED, int compareMminusED, gdl_string * altField) {
+
+	gdl_list * listAltGI = gdl_list_alloc(gdl_list_default); // list with the gi values for the alternative hits
+	gdl_list * listAltED = gdl_list_alloc(gdl_interface_int); // list with the ed values for the alternative hits
+
+	if (listGoodGI == 0)
+		listGoodGI = gdl_list_alloc(gdl_list_default);
+	else
+		gdl_list_clear(listGoodGI); // clear the list if not null
+
+	int i,j = 0;
+	//int ed, nbM = 0;
+	int n = strlen(alt);
+	int start = 0;
+	int currentAltLength = 0;
+	char* currentAlt = 0;
+	char * tmp = 0;
+	int * currentED = 0;
+	gdl_list_itr *itr = 0;
+	gdl_list_itr *itr_ed = 0;
+	gdl_list_itr *itr_gi = 0;
+	int pnbM =0;
+
+	
+	// extract all the alternative hits from alt; put each alternative hit in the list listAltGI and
+	// each alternative edit distance in the list listAltED
+	for (i = 0; i < n; i++) {
+		if (*(alt + i) == ';') {
+		
+			// extract alternative hit
+			currentAltLength = i - start;
+			currentAlt = gdl_string_alloc(currentAltLength);
+			tmp = alt + start;
+			currentAlt = strncpy(currentAlt, tmp, currentAltLength);
+			start = i;
+
+			// extract GI
+			char * currentAltGI = 0;
+			//if (no_parse_hit_name_flag) {
+			if (full_hit_name_flag) {
+				for (j = 0; j < strlen(currentAlt); j++) {
+					if (currentAlt[j] == ',')
+						break;
+				}
+				currentAltGI = gdl_string_alloc(j - 1);
+				strncpy(currentAltGI, currentAlt + 1, j - 1); // ignore the Z suffix
+			} else {
+				currentAltGI = get_bestHitGI(currentAlt, currentAltGI);
+			}
+
+
+			//char * currentAltGI = 0;
+			//currentAltGI = get_bestHitGI(currentAlt, currentAltGI);
+
+			// add the GI to the GI list
+			gdl_list_push_back(listAltGI, currentAltGI, 0);
+			
+			
+			// extract edit distance
+			int * ped = GDL_MALLOC (int, 1);
+			*ped = get_ed(currentAlt,1);  // we force to take the first position (it seems to be an error in the doc. ; even for the XP field, the NM seems to be the last field)
+			
+			// add the ed pointeur to the ED list
+			if(compareMminusED == 1)
+			{
+				// extract the number of M in the CIGAR
+				int resComp = strcpy(ALT_FIELD, "XA"); 
+				if (resComp == 0) {
+					pnbM = get_nbMCIGAR_fromAlt(currentAlt,2);
+				} else {
+					pnbM = get_nbMCIGAR_fromAlt(currentAlt,3);
+				}
+				*ped = pnbM - *ped;
+			}
+			gdl_list_push_back(listAltED, ped, 1);
+			// print the CIGAR
+			//printf("currentAlt: %s\n",currentAlt);
+
+			GDL_FREE(currentAlt);
+		}
+	}
+
+	//GDL_FREE(tmp);
+
+	// check that the 2 lists (ed and gi) have the same size
+	if (gdl_list_size(listAltGI) != gdl_list_size(listAltED)) {
+		printf("Error in splitAltHit: problem with the list sizes \n");
+		return 0;
+	}
+
+	// loop on the list to find the gi corresponding to the bestHitED; put them into the returned list (listGoodGI)
+	itr_ed = gdl_list_iterator_front(listAltED);
+	itr_gi = gdl_list_iterator_front(listAltGI);
+	do {
+		currentED = (int *) gdl_list_iterator_value(itr_ed);
+		if(compareMminusED == 0)
+		{
+		
+			if (*currentED <= bestHitED) {
+				gdl_list_push_back(listGoodGI,
+						(char *) gdl_list_iterator_value(itr_gi), 0);
+			}
+		}
+		else
+		{
+			if (*currentED >= bestHitED) {
+				gdl_list_push_back(listGoodGI,
+						(char *) gdl_list_iterator_value(itr_gi), 0);
+			}
+		}
+	} while (gdl_list_iterator_next(itr_ed) && gdl_list_iterator_next(itr_gi));
+
+	
+	// freeing everything
+	gdl_list_iterator_free(itr_ed);
+	gdl_list_iterator_free(itr_gi);
+	gdl_list_free(listAltGI);
+	gdl_list_free(listAltED);
+	//GDL_FREE(currentED);
+	
+	return listGoodGI;
+}
+
+
+/**
+ * \fn int getNumberOfMatch(bam1_t * b)
+ * \brief This function returns the number of M characters in a CIGAR from a bam alignment.
+
+ * \param b a pointer to a bam alignment
+ * \return the number of M characer in a CIGAR
+ */
+int getNumberOfMatch(bam1_t * b)
+{
+
+	uint32_t *cigar = bam1_cigar(b);
+	int k=0;
+	int numberOfMatch = 0;
+	//printf("read: %s\n", b->data);
+	if( b->core.n_cigar ==0) 
+	{
+		//printf("No CIGAR\n");
+		numberOfMatch = 0;
+	}
+	else
+	{
+	for( k=0;k< b->core.n_cigar;++k)
+    {
+		int cop =cigar[k] & BAM_CIGAR_MASK; // operation
+		int cl = cigar[k] >> BAM_CIGAR_SHIFT; // length
+		if(cop == BAM_CMATCH)
+		{
+			//printf("reading %d matches\n",cl);
+			numberOfMatch = numberOfMatch + cl;
+		}
+		/*
+		switch(cop)
+		{
+			case BAM_CMATCH: printf("M");break;
+			case BAM_CINS: printf("I");break;
+			case BAM_CDEL: printf("D");break;
+			case BAM_CREF_SKIP: printf("N"); break;
+			case BAM_CSOFT_CLIP: printf("S");break;
+			case BAM_CHARD_CLIP: printf("R");break;
+			case BAM_CPAD: printf("P");break;
+			default:printf("?");break;
+		}
+		
+	printf("%d",cl);
+	*/
+	}
+	//printf("\n");
+	}
+	return(numberOfMatch);
+	
+}
+/**
+ * \fn static int pr_filtering(gdl_list * bamAlignToCompare_list,gdl_list * bamAlignOriginHeader_list, FILE * stream, int getAlt, int deltaED, int compareMminusED, double propED)
+ * \brief This function extracts the bestGI from a list of alignments.
+
+ * \param bamAlignToCompare_list pointer to a list of bam_1t alignements which should be compared
+ *  \param bamAlignOriginHeader_list pointer to a list of header corresponding to the alignments
+ * \param stream pointer to the outputfile
+ *  \param getAlt if 0 returns only the best Hit for each alignment, otherwise try to find other best hits among alternative hits.
+ *  \param deltaED to be more permissive when retrieving best hits: difference tolerated between minimum edit distance (best hits) and possible alternative best hits.
+ *  \param compareMminusED if 0, compare the alignment based on the edit distance; if 1 compare the alignments based on a score = number of matches in the CIGAR - Edit distance
+ *  \param altField: XA or XP (for BWA-MEM)
+ * \return a success indicator
+ */
+
+static int pr_filtering(gdl_list * bamAlignToCompare_list,
+		gdl_list * bamAlignOriginHeader_list, FILE * stream, int getAlt,
+		int deltaED, int compareMminusED, double propED, gdl_string * altField) {
+	//printf("entering pr_filtering\n");
+	int maxED = 10000000;
+	size_t i, j, n;
+	i = 0;
+	gdl_list_itr * itr;
+	gdl_hashtable * gid_table; // hashtable with the name of the gi as index
+	bam1_t ** bamAligns; // table of  bam1_t
+	bam_header_t ** bamHeaders; // table of bam_header_t
+
+	int bestHitIdx = 0;
+	char ** bestHitName = 0;
+	char * bestHitGI = 0;
+	gdl_list * listGoodGI = 0;
+	
+	int * EDtable = 0, *bestHitOK = 0;
+	int	*NumberMtable=0, *MatchMinusED=0;
+	//int multiple = 0;
+
+	
+	
+	// Create a table of alignments
+	n = gdl_list_size(bamAlignToCompare_list);
+
+	bamAligns = GDL_MALLOC (bam1_t *, n);
+	itr = gdl_list_iterator_front(bamAlignToCompare_list);
+	// filling the table with the list values
+	do {
+		bamAligns[i++] = (bam1_t *) gdl_list_iterator_value(itr);
+	} while (gdl_list_iterator_next(itr));
+	gdl_list_iterator_free(itr);
+
+	// Create a table of header
+	if (gdl_list_size(bamAlignOriginHeader_list) != n) {
+		GDL_ERROR_VAL("pr_filtering :: Problem with lists sizes", GDL_FAILURE,
+				1);
+	}bamHeaders = GDL_MALLOC (bam_header_t *, n);
+	itr = gdl_list_iterator_front(bamAlignOriginHeader_list);
+	i = 0;
+	// filling the table with the list values
+	do {
+		bamHeaders[i++] = (bam_header_t *) gdl_list_iterator_value(itr);
+	} while (gdl_list_iterator_next(itr));
+	gdl_list_iterator_free(itr);
+
+	// first, we have to find the minimum of the edit distances among all the alignments.
+	// create a vector of edit distance for the best hits
+
+	
+	EDtable = GDL_MALLOC (int, n);
+	bestHitOK = GDL_MALLOC (int, n);
+	if(compareMminusED == 1)
+	{
+		NumberMtable = GDL_MALLOC (int, n);
+		MatchMinusED = GDL_MALLOC (int, n);
+	}
+	for (i = 0; i < n; i++) {
+        // check if the read is mapped
+		int32_t is_mapped = ((bamAligns[i]->core.flag&BAM_FUNMAP)==0);
+		if(!is_mapped) {
+			bestHitOK[i] = 0;
+			EDtable[i] = maxED;
+			if( compareMminusED == 1 )
+			{
+				NumberMtable[i] = 0;
+			}
+		} else {
+			bestHitOK[i] = 1;
+			if (bam_aux_get(bamAligns[i], "NM") == 0) {
+				printf("bam aux get pointeur null \n");
+			}
+			EDtable[i] = bam_aux2i(bam_aux_get(bamAligns[i], "NM"));
+			//printf("EDtable: %d\n",EDtable[i]);
+			if( compareMminusED == 1 )
+			{
+				NumberMtable[i] = getNumberOfMatch(bamAligns[i]);
+			}
+		}
+		if( compareMminusED == 1 )
+		{
+			MatchMinusED[i] = NumberMtable[i] - EDtable[i] ;
+		}
+
+	}
+
+	int minED[1];
+	int maxMatchMinusED[1];
+	
+	int result = gdl_sort_int_smallest(minED, 1, EDtable, 1, n);
+	if (result != 0) // problem with smallest
+		minED[0] = maxED;
+	if( compareMminusED == 1 )
+	{
+		result = gdl_sort_int_largest(maxMatchMinusED, 1, MatchMinusED, 1, n);
+		if (result != 0) // problem with smallest
+			maxMatchMinusED[0] = -maxED;
+	}
+	gid_table = gdl_hashtable_alloc(gdl_hash_default, 0);
+	
+	
+	for (i = 0; i < n; i++) {
+
+		if (bestHitOK[i] != 0) {
+			
+			/*
+			if(i ==0) {
+			printf("Read %s\t",bamAligns[i]->data);
+			}
+			*/
+			
+			// retrieve the best hit, the edit distance
+			bestHitIdx = (int) ((bamAligns[i]->core).tid);
+			bestHitName = bamHeaders[i]->target_name + bestHitIdx;
+
+			// get the corresponding gi
+			bestHitGI = 0;
+			bestHitGI = get_bestHitGI(*bestHitName, bestHitGI);
+			
+			/*
+			printf("Hit %d: %s\t",i,bestHitGI);
+			printf("ED %d: %d\t",i,EDtable[i]);
+			if (compareMminusED ==1) {
+				printf("nbM %d: %d\t",i,MatchMinusED[i]+EDtable[i]);
+			}
+			*/
+			if (bestHitGI == 0) {
+				printf("bestHitGI NULL \n");
+			}
+			// add the best hit to the hash table, if not already in and if edit distance of the hit equals to
+			// the minimum of all the bestHit
+			if (compareMminusED ==0)
+			{
+				if (!gdl_hashtable_lookup(gid_table, bestHitGI)
+					&& (EDtable[i] - minED[0]) <= deltaED) {
+					gdl_hashtable_add(gid_table, bestHitGI, 0, 1);
+					//printf("Adding gi: %s in the Hash\n", bestHitGI);
+				}
+			}
+			else
+			{
+				// using deltaED to identify alternative best hits
+				if(propED > 0)
+				{
+				
+					//deltaED = (int) ( maxMatchMinusED[0] - (int) (propED*(float) maxMatchMinusED[0]) );
+					deltaED =  (int) ( (float) propED * (float) maxMatchMinusED[0]) ;
+					//printf("propED*maxMatchMinusED  :  %d\n",(int) (propED*(float) maxMatchMinusED[0]));
+					//printf("numberMMED: %d \t deltaED : %d \n", maxMatchMinusED[0], deltaED);
+				}
+				//printf("i: %d \t max stat: %d \t current stat : %d \t deltaED : %d \t propED %f\n", i, maxMatchMinusED[0], MatchMinusED[i], deltaED,propED);
+					if (!gdl_hashtable_lookup(gid_table, bestHitGI)
+						&& (maxMatchMinusED[0] - MatchMinusED[i]) <= deltaED) {
+						gdl_hashtable_add(gid_table, bestHitGI, 0, 1);
+					}
+			}
+			gdl_string_free(bestHitGI);
+			// retrieve the alternative hits
+			if (getAlt == 1) {
+				char * alt = 0;
+				//alt = bam_aux_get(bamAligns[i], "XA");
+				alt = bam_aux_get(bamAligns[i], altField);
+				//printf("alternative hits: %s \n",alt);
+				// if any alternative hits: retrieve the gi of best alternative hits (with edit distance
+				// less or equal to the bestHitED
+				if (alt != 0) {
+					// list of best alternative hits
+					if (compareMminusED ==0)
+					{
+						listGoodGI = splitAltHit(alt, listGoodGI,
+							minED[0] + deltaED, compareMminusED, altField);
+					}
+					else
+					{
+						if(propED > 0)
+						{
+							//deltaED = (int) ( maxMatchMinusED[0] - (int) propED*maxMatchMinusED[0] );
+							deltaED = (int) ( (float) propED * (float) maxMatchMinusED[0]) ;
+							//printf("numberMMED: %d \t deltaED : %d \n", maxMatchMinusED[0], deltaED);
+						}
+						listGoodGI = splitAltHit(alt, listGoodGI,
+							maxMatchMinusED[0] - deltaED, compareMminusED, altField);
+					}
+					// loop on the list and add the alternative best hits to the hashtable
+					if (gdl_list_size(listGoodGI) > 0) {
+
+						itr = gdl_list_iterator_front(listGoodGI);
+						do {
+							char * tmp = (char *) gdl_list_iterator_value(itr);
+							if (gdl_hashtable_lookup(gid_table, tmp)) {
+								continue;
+							} else {
+								// print the gi
+								//if(mode ==0) fprintf(stream, "%s ",tmp);
+								gdl_hashtable_add(gid_table, tmp, 0, 0);
+							}
+						} while (gdl_list_iterator_next(itr));
+						gdl_list_iterator_free(itr);
+					}
+				}
+			}
+
+		}
+	}
+
+	// print the hash
+	int sizeHash = gdl_hashtable_size(gid_table);
+	// print the first read name
+	if (sizeHash > 0)
+		fprintf(stream, "%s\t", bamAligns[0]->data);
+	i = 0;
+	if (gdl_hashtable_size(gid_table)) {
+		gdl_hashtable_itr * itrH = gdl_hashtable_iterator(gid_table);
+		do {
+			i = i + 1;
+			if (i < sizeHash)
+				fprintf(stream, "%s;", gdl_hashtable_iterator_key(itrH));
+			else
+				fprintf(stream, "%s", gdl_hashtable_iterator_key(itrH));
+		} while (gdl_hashtable_iterator_next(itrH));
+		gdl_hashtable_iterator_free(itrH);
+	}
+
+	gdl_hashtable_free(gid_table);
+	if (sizeHash > 0)
+		fprintf(stream, "\n");
+
+	// Clean alignments
+	for (i = 0; i < n; i++) {
+		bam_destroy1(bamAligns[i]);
+	}
+	GDL_FREE(bamAligns);
+	GDL_FREE(bamHeaders);
+	GDL_FREE(EDtable);
+	GDL_FREE(bestHitOK);
+	if (compareMminusED ==1)
+	{
+		GDL_FREE(NumberMtable);
+		GDL_FREE(MatchMinusED);
+	}
+	
+	//printf("\n");
+}
+
+
+/**
+ * \fn int main(int argc, char *argv[])
+ * \brief Main functions. Retrieve the gi of the best hits for an alignment obtained with bwa
+
+ * \param argc
+ * \param argv
+ * \return a success indicator
+ */
+int main(int argc, char *argv[]) {
+	int status;
+	parse_argument(argc, argv);
+	if (help_flag) {
+		exit(help());
+	}
+
+	status = check_argument();
+
+	if (status == GDL_SUCCESS) {
+
+	
+		int checkReadPrefix = 0;
+
+		if (SEPARATOR_PAIRED_READS == 0) {
+			// define '.' as a default separator
+			//SEPARATOR_PAIRED_READS = gdl_string_alloc(1);
+			//SEPARATOR_PAIRED_READS[0] = '.';
+			printf(
+					"No separator is defined for the reads; will compare the whole read name \n");
+		} else {
+			printf("The separator used is : %s \n", SEPARATOR_PAIRED_READS);
+			checkReadPrefix = 1;
+		}
+		
+		if (compare_match_minus_ed_flag != 0 & PROP_ED > 0)
+		{
+			printf("Using prop ed = %f \n", PROP_ED);
+		}
+
+		
+		if ( ALT_FIELD == 0) {
+			ALT_FIELD = gdl_string_clone("XA");
+		}
+		if( ALT == 1) {
+			printf("The alternative field is %s\n",ALT_FIELD);
+		}
+		
+		
+		
+		gdl_string * line = 0, *readName, *readNamePrefix;
+		FILE * streamReadName;
+		FILE * stream;
+		FILE * streamOutputFile;
+
+		gdl_list * file_list = 0;
+		gdl_list * header_list = 0;
+		gdl_list * bamFh_list = 0;
+		gdl_list * bamAlignToCompare_list = 0;
+		gdl_list * bamAlignOriginHeader_list = 0;
+		size_t i, j, n, cptr = 0, nbBAMfiles = 0;
+		int compReadName = 0;
+		gdl_string * BAMfile;
+		bam1_t * bamAlign;
+		bam_header_t * bamHeader;
+		bamFile bamStream;
+
+		gdl_string **currentNames_table = 0;
+		bam1_t ** bamAlign_table = 0;
+		bamFile * bamFH_table = 0;
+		bam_header_t ** bamHeader_table = 0;
+		int * endFile_table = 0;
+		// Open the input file that contains the list of SAM/BAM files to proceed
+		stream = gdl_fileopen(INPUT, "r");
+		// opening the output file to save the results
+		streamOutputFile = gdl_fileopen(OUTPUT, "w");
+
+		// Add the path to the files into a list
+		file_list = gdl_list_alloc(gdl_list_default);
+
+		while (gdl_getline(&line, &n, stream) != -1) {
+			i = j = 0;
+			BAMfile = gdl_string_next_token(line, n, &i, &j);
+			gdl_list_push_back(file_list, BAMfile, 0);
+		}
+
+		// opening the BAM files and put the headers into a list
+		// writing all headers
+
+		nbBAMfiles = gdl_list_size(file_list);
+
+		bamAlign_table = GDL_MALLOC (bam1_t *, nbBAMfiles);
+		bamFH_table = GDL_MALLOC(bamFile, nbBAMfiles);
+		bamHeader_table = GDL_MALLOC (bam_header_t *, nbBAMfiles);
+		endFile_table = GDL_MALLOC (int, nbBAMfiles);
+
+		for (i = 0; i < nbBAMfiles; i++) {
+			BAMfile = gdl_list_get(file_list, i);
+			// Open the file and initialize the file handler
+			bamStream = bam_open(BAMfile, "r");
+			// adding the BAM file handler to the list
+			bamFH_table[i] = bamStream;
+			printf("Opening BAM file: %s ... [OK]\n", BAMfile);
+
+			// adding the header to the list
+			bamHeader = bam_header_read(bamStream);
+			bamHeader_table[i] = bamHeader;
+
+			// initializing alignments and adding to the list
+			bamAlign = bam_init1();
+			bamAlign_table[i] = bamAlign;
+			endFile_table[i] = 0;
+		}
+
+		streamReadName = gdl_fileopen(INPUT_READ_NAME, "r");
+		// table with current alignments names
+		currentNames_table = GDL_MALLOC (gdl_string *, nbBAMfiles);
+		for (i = 0; i < nbBAMfiles; i++) {
+			bamAlign = bamAlign_table[i];
+			bamStream = bamFH_table[i];
+			bam_read1(bamStream, bamAlign);
+			currentNames_table[i] = bamAlign->data;
+		}
+
+		// reading read names
+		line = 0;
+		int cptr2 = 1;
+		while (gdl_getline(&line, &n, streamReadName) != -1) {
+			cptr = cptr + 1;
+			if (cptr % 100000 == 0)
+				printf("Number of reads: %d\n", cptr);
+			i = j = 0;
+			readName = gdl_string_next_token(line, n, &i, &j);
+			if (checkReadPrefix == 1) {
+				readNamePrefix = get_prefix(readName, SEPARATOR_PAIRED_READS);
+			} else {
+				readNamePrefix = readName;
+			}
+			bamAlignToCompare_list = gdl_list_alloc(gdl_list_default);
+			bamAlignOriginHeader_list = gdl_list_alloc(gdl_list_default);
+			//printf("readNamePrefix : %s \n",readNamePrefix);
+			for (i = 0; i < nbBAMfiles; i++) {
+
+				while (check_name_or_prefix(currentNames_table[i],
+						readNamePrefix, checkReadPrefix, SEPARATOR_PAIRED_READS)
+						== 0 && endFile_table[i] == 0) {
+					//	printf("currentName Alignment : %s \n",currentNames_table[i]);
+
+					gdl_list_push_back(bamAlignToCompare_list,
+							bamAlign_table[i], 0);
+					gdl_list_push_back(bamAlignOriginHeader_list,
+							bamHeader_table[i], 0);
+
+					//reading next alignment
+					bamAlign = bam_init1();
+
+					bamStream = bamFH_table[i];
+					int resRead = bam_read1(bamStream, bamAlign);
+					if (resRead == -1) {
+						printf("Reaching end of file\n");
+						endFile_table[i] = 1;
+					}
+					if (resRead == -2)
+						GDL_ERROR_VAL("check name or prefix => pointeur null",
+								GDL_FAILURE, 1);
+					if (endFile_table[i] == 0) {
+						bamAlign_table[i] = bamAlign;
+						currentNames_table[i] = (gdl_string *) bamAlign->data;
+					}
+
+				}
+			}
+
+			if (gdl_list_size(bamAlignToCompare_list) > 0) {
+				//printf("There are %d alignments to compare for read %s \n",gdl_list_size(bamAlignToCompare_list),readNamePrefix);
+				// call pr_filtering function
+				pr_filtering(bamAlignToCompare_list, bamAlignOriginHeader_list,
+						streamOutputFile, ALT, DELTA_ED, compare_match_minus_ed_flag, PROP_ED, ALT_FIELD);
+
+			}
+			// destroying alignment and freeing list
+			gdl_list_free(bamAlignToCompare_list);
+			gdl_list_free(bamAlignOriginHeader_list);
+			gdl_string_free(line);
+			line = 0;
+			if (checkReadPrefix == 1) {
+				gdl_string_free(readNamePrefix);
+			} else {
+				readNamePrefix = 0;
+			}
+			gdl_string_free(readName);
+
+		}
+
+
+		for (i = 0; i < n; i++) {
+			bam_close(bamFH_table[i]);
+			bam_header_destroy(bamHeader_table[i]);
+		}
+		GDL_FREE(currentNames_table);
+		GDL_FREE(bamAlign_table);
+		GDL_FREE(bamFH_table);
+		GDL_FREE(bamHeader_table);
+		GDL_FREE(endFile_table);
+		gdl_list_free(file_list);
+		gdl_list_free(header_list);
+		gdl_list_free(bamFh_list);
+		gdl_fileclose(INPUT, stream);
+		gdl_fileclose(OUTPUT, streamOutputFile);
+		gdl_fileclose(INPUT_READ_NAME, streamReadName);
+
+		GDL_FREE(SEPARATOR_PAIRED_READS);
+	}
+
+	exit(0);
+}

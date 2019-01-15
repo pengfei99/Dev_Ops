@@ -1,0 +1,259 @@
+/*
+ *  mgx-taxolca.c
+ *
+ *  $Author: veyriejb $, $Date: 2012/02/19 14:54:17 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+#include <ctype.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_io.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_seq_io.h>
+
+#include "mixgenomix.h"
+#include "gzutil.h"
+#include "taxo.h"
+
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-taxolca";
+
+static int help_flag       = 0;
+static int verbose_flag    = 0;
+static int no_missing_flag = 0;
+static int distance_flag   = 0;
+
+static gdl_string * INPUT    = NULL;
+static gdl_string * TAXODB   = NULL;
+static gdl_string * OUTPUT   = NULL;
+
+static struct option long_options[] =
+ {
+   /* These options set a flag. */
+   {"help", no_argument,          &help_flag, 1},
+   {"verbose", no_argument,       &verbose_flag, 1},
+   {"brief",   no_argument,       &verbose_flag, 0},
+   {"no-missing",   no_argument,       &no_missing_flag, 1},
+   {"distance",   no_argument,       &distance_flag, 1},
+   /* These options don't set a flag.
+      We distinguish them by their indices. */
+   {"output",   required_argument, 0, 'o'},
+   {"input",   required_argument, 0, 'i'},
+   {"taxodb",   required_argument, 0, 't'},
+   {0, 0, 0, 0}
+ };
+
+static int
+parse_argument (int argc, char *argv[])
+{
+	int c;
+
+   while (1)
+     {
+
+       /* getopt_long stores the option index here. */
+       int option_index = 0;
+
+       c = getopt_long (argc, argv, "i:o:t:",
+                        long_options, &option_index);
+
+       /* Detect the end of the options. */
+       if (c == -1)
+         break;
+
+       switch (c)
+         {
+         case 0:
+           /* If this option set a flag, do nothing else now. */
+           if (long_options[option_index].flag != 0)
+             break;
+           printf ("option %s", long_options[option_index].name);
+           if (optarg)
+             printf (" with arg %s", optarg);
+           printf ("\n");
+           break;
+
+ 		 case 'i':
+           INPUT = gdl_string_clone (optarg);
+           break;
+         case 'o':
+           OUTPUT = gdl_string_clone (optarg);
+           break;
+         case 't':
+		   TAXODB = gdl_string_clone (optarg);
+		   break;
+         case '?':
+           GDL_ERROR_VAL ("Unknown arguments", GDL_EINVAL, -1);
+         default:
+           GDL_ERROR_VAL ("Bad arguments", GDL_EINVAL, -1);
+         }
+     }
+}
+
+static int
+check_argument (void)
+{
+
+	if (INPUT == 0)
+	{
+		GDL_ERROR_VAL ("No input file provided",
+					   GDL_FAILURE,
+					   1);
+	}
+	if (OUTPUT == 0)
+	{
+		GDL_ERROR_VAL ("No output file provided",
+					   GDL_FAILURE,
+					   1);
+	}
+	if (TAXODB == 0)
+	{
+		GDL_ERROR_VAL ("No taxonomy database file provided",
+					   GDL_FAILURE,
+					   1);
+	}
+
+	return GDL_SUCCESS;
+}
+
+
+static int
+help (void)
+{
+   print_header (PROGRAM);
+   printf ("\n");
+   printf ("--help\tDisplay a brief help on program usage\n");
+   printf ("--verbose\tOutput message on standard output to see what the program is doing\n");
+   printf ("\n");
+   printf ("--distance\tOutput the distance between taxons as the sum of edges to reach the lca\n");
+   printf ("\n");
+   printf ("--input or -i\tInput file\n");
+   printf ("--output or -o\tThe output file\n");
+   printf ("--taxodb or -t\tThe taxonomy database file\n");
+}
+
+int
+main (int argc, char *argv[])
+{
+  int status;
+
+  parse_argument (argc, argv);
+
+  if (help_flag)
+  {
+  	  exit (help());
+  }
+
+  status = check_argument ();
+
+  if (status == GDL_SUCCESS)
+  {
+	    size_t i,j,k,n,ntaxon_id;
+	    gdl_string * line=0, * tok1, *tok2, **taxon_ids;
+	    gdl_runtime * runtime;
+	    mgx_taxonomy * taxonomy;
+        FILE * stream, * ostream;
+
+	    runtime = runtime_setup ();
+
+	    stream   = gdl_fileopen (TAXODB, "r");
+	    taxonomy = mgx_taxonomy_fread (stream);
+	    gdl_fileclose (TAXODB, stream);
+
+	    	// if necessary prepare taxonomy for LCA retrieval
+		if(!taxonomy->E){
+			if(verbose_flag){
+				printf("*** preparing taxonomy for LCA retrieval ***\n");
+			}
+	  	        mgx_taxonomy_euler_tour(taxonomy);
+			mgx_taxonomy_rmq_prepare(taxonomy);
+		}
+
+		stream  = gdl_fileopen (INPUT, "r");
+		ostream = gdl_fileopen (OUTPUT, "w");
+		
+		while(gdl_getline (&line, &n, stream)!=-1)
+		{
+			i=j=0;
+			tok1 = gdl_string_next_token (line, n, &i, &j);
+			tok2 = gdl_string_next_token (line, n, &i, &j);
+			if (tok2)
+			{
+				taxon_ids = gdl_string_split (tok2, ";", &ntaxon_id);
+				if (!taxon_ids)
+				{
+					GDL_ERROR_VAL (gdl_string_sprintf("Unrecognized token %s", tok2), GDL_FAILURE, GDL_FAILURE);
+				}
+				// Get the indexes of the corresponding taxons
+				size_t * taxon_idx = GDL_MALLOC (size_t, ntaxon_id);
+				for(k = 0; k < ntaxon_id; k++)
+				{
+					// TODO check range of the value
+					taxon_idx[k] = taxonomy->taxid2index[(size_t)atol(taxon_ids[k])];
+				}
+				int lca = mgx_taxonomy_lca_set (taxonomy, ntaxon_id, taxon_idx);
+				if (lca != -1)
+				{
+					fprintf(ostream, "%s\t%ld\t%s", tok1, taxonomy->taxons[lca]->id, taxonomy->ranks->rank_names[taxonomy->ranks->rid2tx[lca]]);
+					if (taxonomy->taxons[lca]->nname)
+					{
+						fprintf(ostream, "\t%s",taxonomy->taxons[lca]->names[0]);
+					}
+					else
+					{
+						fprintf(ostream, "\tNA");
+					}
+                                        if (distance_flag) 
+                                        {
+                                             size_t td = 0;
+                                             for(k = 0; k < ntaxon_id; k++) td += taxonomy->taxons[taxon_idx[k]]->depth;
+                                             td -= (ntaxon_id) * taxonomy->taxons[lca]->depth;
+                                             fprintf(ostream, "\t%ld",td);
+                                        }
+					fprintf(ostream, "\n");
+				}
+				else
+				{
+					if(no_missing_flag==0) fprintf(ostream, "%s\tNA\tNA\tNA\n", tok1);
+				}
+				GDL_FREE (taxon_idx);
+				GDL_MATRIX_FREE (taxon_ids, ntaxon_id);
+				gdl_string_free (tok2);
+			}
+			else
+			{
+				if(no_missing_flag==0) fprintf(ostream, "%s\tNA\tNA\tNA\n", tok1);
+			}
+			fflush(ostream);
+			gdl_string_free (tok1);
+			gdl_string_free (line);
+			line=0;
+		}
+
+		gdl_fileclose (OUTPUT, ostream);
+		gdl_fileclose (INPUT, stream);
+
+	    // Save the runtime
+	    runtime_setdown (runtime);
+  }
+
+  exit (0);
+}
+

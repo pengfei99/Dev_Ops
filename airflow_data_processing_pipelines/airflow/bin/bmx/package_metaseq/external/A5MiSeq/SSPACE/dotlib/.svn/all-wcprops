@@ -1,0 +1,23 @@
+K 25
+svn:wc:ra_dav:version-url
+V 51
+/svn/genepi/!svn/ver/3/trunk/external/SSPACE/dotlib
+END
+getopts.pl
+K 25
+svn:wc:ra_dav:version-url
+V 62
+/svn/genepi/!svn/ver/3/trunk/external/SSPACE/dotlib/getopts.pl
+END
+DotLib.pm
+K 25
+svn:wc:ra_dav:version-url
+V 61
+/svn/genepi/!svn/ver/3/trunk/external/SSPACE/dotlib/DotLib.pm
+END
+svn-commit.tmp
+K 25
+svn:wc:ra_dav:version-url
+V 66
+/svn/genepi/!svn/ver/3/trunk/external/SSPACE/dotlib/svn-commit.tmp
+END

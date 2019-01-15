@@ -1,0 +1,539 @@
+/*
+ *  mgx-seq-fa2vw.c
+ *
+ *  $Author: vervieke $, $Date: 2014/02/11 17:25:37 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <time.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_sort_uint.h>
+#include <gdl/gdl_io.h>
+#include <gdl/gdl_hash.h>
+
+#include "mixgenomix.h"
+
+#include "gzutil.h"
+#include <ext/kseq/kseq.h>
+KSEQ_INIT(gzFile, gzread);
+
+#include "header.c"
+
+static gdl_string * PROGRAM = "mgx-seq-fa2vw";
+
+static int help_flag    = 0;
+static int verbose_flag = 0;
+static int debug_flag = 0;
+static int stdout_flag = 1;
+static int taxid_flag = 0;
+static int dico_flag = 0;
+static int keeptaxid_flag = 0;
+static int do_reverse = 1;
+
+static gdl_string * INPUT = NULL;
+static gdl_string * OUTPUT = NULL;
+static gdl_string * DICO = NULL;
+static gdl_string * K = NULL;
+static gdl_string * LABEL1 = NULL;
+static gdl_string * LABEL2 = NULL;
+static gdl_string * TAXID = NULL;
+
+static struct option long_options[] =
+{
+		/* These options set a flag. */
+		{"help", no_argument,          &help_flag, 1},
+		{"verbose", no_argument,       &verbose_flag, 1},
+		{"keeptaxid", no_argument,	&keeptaxid_flag, 1},
+                {"forward_only", no_argument,      &do_reverse, 0},
+	/* These options don't set a flag.
+         We distinguish them by their indices. */
+		{"input",   required_argument, 0, 'i'},
+		{"taxid",   required_argument, 0, 't'},
+		{"output",   required_argument, 0, 'o'},
+		{"dico", required_argument, 0, 'd'},
+		{"kmer_size", required_argument, 0, 'k'},
+		{"label1", required_argument, 0, 'p'},
+		{"label2", required_argument, 0, 'n'},
+		{0, 0, 0, 0}
+};
+
+static int
+parse_argument (int argc, char *argv[])
+{
+	int c;
+
+	while (1)
+	{
+
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+
+		c = getopt_long (argc, argv, "i:o:d:k:n:p:t:",
+				long_options, &option_index);
+
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+
+		switch (c)
+		{
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf ("option %s", long_options[option_index].name);
+			if (optarg)
+				printf (" with arg %s", optarg);
+			printf ("\n");
+			break;
+		case 'i':
+			INPUT = gdl_string_clone (optarg);
+			break;
+		case 'o':
+			OUTPUT = gdl_string_clone (optarg);
+			stdout_flag = 0;
+			break;
+		case 'd':
+			DICO = gdl_string_clone (optarg);
+			dico_flag = 1;
+			break;
+		case 'k':
+			K = gdl_string_clone (optarg);
+			break;
+		case 'n':
+                        LABEL2 = gdl_string_clone (optarg);
+                        break;
+		case 'p':
+                        LABEL1 = gdl_string_clone (optarg);
+                        break;
+		case 't':
+                        TAXID = gdl_string_clone (optarg);
+			taxid_flag = 1;
+                        break;
+		case '?':
+			GDL_ERROR_VAL ("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL ("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+static int
+check_argument (void)
+{
+	if (INPUT == 0)
+	{
+		GDL_ERROR_VAL ("No input file provided",  GDL_FAILURE, 1);
+	}
+
+	if(K == 0){
+		GDL_ERROR_VAL ("No kmer size provided", GDL_FAILURE, 1);
+	}
+
+	if ( (DICO == 0) & taxid_flag & (!keeptaxid_flag) )
+	{
+		GDL_ERROR_VAL ("Must provide a dico if option taxid is specified and keeptaxid flag is not",  GDL_FAILURE, 1);
+	}
+
+	if(LABEL2 != 0 & LABEL1 == 0){
+		 GDL_ERROR_VAL ("Cannot specify label2 (-n) without label1 (-p)", GDL_FAILURE, 1);
+	}	
+
+	if(dico_flag & keeptaxid_flag){
+		printf ("WARNING : the --dico option is useless if --keeptaxid is specified \n");
+		dico_flag = 0;
+	}
+
+	if(dico_flag & !taxid_flag){
+		printf ("WARNING : the --dico option is useless if --taxid is not specified \n");
+		dico_flag = 0;
+	}
+
+
+
+	return GDL_SUCCESS;
+}
+
+static int
+help (void)
+{
+	print_header (PROGRAM);
+	printf ("\n");
+	printf ("--help\tkmerize sequences from a fasta file and output a Vowpal Wabbit (VW) compliant output file\n");
+	printf ("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf ("--debug\tMore detailed output message (e.g, for debugging purposes)\n");
+	printf ("\n");
+
+	printf ("--input or -i\t input read file (fasta format)\n");
+        printf ("--kmer or -k\t kmer size\n");
+
+        printf ("--dico or -d\t match table between taxids and class labels\n");
+	printf ("\t(created if does not exist ; possibly updated and overwritten if exists)\n");
+
+	printf ("[--taxid or -t\t read taxids from a separate file (one column text file)]\n");
+
+	printf ("[--keeptaxid \t keep taxids as such (either read from the fasta or from separate file)]\n");
+	printf ("\t (useful to generate +1/-1 labels for instance)\n");
+	printf ("\t (NB : in this case the dictionary is not overwritten)\n");
+
+	printf ("--[dico or -d\t two-colum file giving the correspondance between taxids and VW class labels]\n");
+	printf ("\t(created if does not exist ; possibly updated and overwritten if exists)\n");
+	printf ("\t(must be specified if --taxid option is used without --keeptaxid flag)\n");
+	printf ("\t(useless if --taxid option is not used)\n");
+	printf ("\t(useless if --keeptaxid is used)\n");
+
+	printf ("[--output or -o\t output file]\n");
+	printf ("\t (if not specified, results printed on standard output)\n");
+
+        printf ("[--forward_only \t output forward  kmers only (defaut : fw + rt)]\n");
+
+
+	printf ("[-p \t binary classification : taxid of positive class\n");
+	printf ("\t(if not specified --> multiclass classification)\n");
+	printf ("[-n \t binary classification : taxid of negative class]\n");
+	printf ("\t(if specified --> OVO classification)\n");
+	printf ("\t(if not specified --> OVA classification)\n");
+}
+
+gdl_string * reverse_transcribe(gdl_string * s){
+        // initialize result
+        gdl_string * res;
+        res = gdl_string_alloc(strlen(s));
+        // process sequence
+        size_t i;
+        for (i = 0; i < strlen(s); i++){
+                // reverse
+                res[i] = s[strlen(s)-i-1];
+                // transcribe
+                switch(res[i]){
+                        case 'A' : res[i] = 'T'; break;
+                        case 'T' : res[i] = 'A'; break;
+                        case 'G' : res[i] = 'C'; break;
+                        case 'C' : res[i] = 'G'; break;
+                        default : break;
+                }
+        }
+        // return
+        return(res);
+}
+
+
+
+int
+main (int argc, char *argv[])
+{
+
+	int status;
+
+	parse_argument (argc, argv);
+
+	if (help_flag)
+	{
+		exit (help());
+	}
+
+	if(debug_flag)
+	{
+		verbose_flag = 1;
+	}
+
+	status = check_argument ();
+
+
+	if (status == GDL_SUCCESS)
+	{
+
+		gzFile f, dico_table;
+		kseq_t *seq;
+		FILE * stream;
+		size_t cptr, nlabels, n_write;
+		size_t *label_tx;
+    		gdl_hashtable *taxid_to_label;
+		int i, j, l, kmer_size;
+		size_t tx_write, process = 0;
+		size_t *kmer_sizes;
+                size_t n_kmer_sizes;
+		size_t label_write = 0;
+		char taxid_name[20];
+		unsigned int *count_tx;	
+		gdl_string * ALGO = 0;
+		ALGO = "MULTICLASS";
+		// new variables for taxid option
+		FILE * taxid_stream;
+		gdl_string *taxid = NULL;
+		gdl_string *line = NULL;
+		size_t n;
+
+		if(LABEL1)
+		{
+			if(LABEL2)
+				ALGO = "OVO";
+			else	
+				ALGO = "OVA"; 
+		}	
+
+                //-------------------------//
+ 		// parse sizes to consider //
+		//-------------------------//
+		gdl_string ** toks;
+           	size_t ntok, n1, n2, ntok2;
+		toks = gdl_string_split(K, ",", &ntok); // search for list of values
+		if(ntok == 1){
+                        toks = gdl_string_split(K, "-", &ntok); // search for range of values
+			if(ntok == 1){
+                                n_kmer_sizes = 1;
+                                kmer_sizes = GDL_CALLOC(size_t, n_kmer_sizes);
+                                kmer_sizes[0] = atoi(K);
+			}else{
+                                if(ntok != 2){
+                                        GDL_ERROR_VAL ("problem reading kmer sizes",GDL_FAILURE,1);
+                		}
+				n1 = atoi(toks[0]);
+				n2 = atoi(toks[1]);
+				if(n1 >= n2){
+                       		 	GDL_ERROR_VAL ("problem reading kmer sizes",GDL_FAILURE,1);
+				}
+				n_kmer_sizes = n2-n1+1;
+				kmer_sizes = GDL_CALLOC(size_t, n_kmer_sizes);
+				for(i = 0; i < n_kmer_sizes; i++){
+                			kmer_sizes[i] = n1 + i;
+                		}
+			}	
+		}else{
+			n_kmer_sizes = ntok;
+			kmer_sizes = GDL_CALLOC(size_t, n_kmer_sizes);
+			for(i = 0; i < n_kmer_sizes; i++){
+				kmer_sizes[i] = atoi(toks[i]);
+			}
+		}
+		if(verbose_flag){
+        		printf("** considering %d sizes of kmers : \n", n_kmer_sizes);
+			for(i = 0; i < n_kmer_sizes; i++){
+               			printf("\t- size no %d = %d\n", i, kmer_sizes[i]);
+                	}
+        	}
+
+		//---------------------//
+		// initialize I/O data //
+		//---------------------//
+		// open input file
+		f = gzopen(INPUT, "r");
+		seq = kseq_init(f);
+		// open taxid file
+		if(taxid_flag){
+		 	taxid_stream  = gdl_fileopen (TAXID, "r");	
+		}	
+		// read dictionary
+		if(dico_flag){
+			// initialize dictionary hash table (taxid to VW class index)
+ 	 		taxid_to_label = gdl_hashtable_alloc (gdl_interface_uint, 0);
+			//  read dictionary (if already exists)
+			dico_table = fopen(DICO, "r");
+			if(dico_table)
+			{
+				while(!feof(dico_table))
+               			{
+					// extract (taxid / class) pair					
+					fscanf(dico_table,"%i\t%i",&tx_write,&label_write);
+					sprintf(taxid_name,"%d",tx_write);
+					// add to hash hash table (sanity check : check it does not exist already)
+					 if((count_tx=(unsigned int*) gdl_hashtable_lookup (taxid_to_label, taxid_name)) == 0)
+					{
+						//new key
+						count_tx = GDL_CALLOC (unsigned int, 1);
+        	       	                 	*count_tx = (unsigned int) (label_write);
+						gdl_hashtable_add(taxid_to_label, taxid_name, count_tx, 1);
+					}
+				}
+			fclose(dico_table);
+			}
+		}
+		// open output file
+  		if(!stdout_flag)
+		{
+			stream = gdl_fileopen (OUTPUT, "w");
+		}
+
+		//-----------------------//
+  		// process each sequence //
+  		//----------------------//
+		cptr = 0;
+		nlabels = 1;
+		while (kseq_read(seq) >= 0)
+		{
+			// log message //
+			// ------------//
+			cptr++;
+			if(cptr > 0 & cptr % 1000 == 0){
+				if(verbose_flag){
+					printf("\t- processing sequence no %d (length = %d)\n", cptr, seq->seq.l);
+				}
+			}
+			if(taxid_flag){
+                                gdl_getline (&taxid, &n, taxid_stream);
+			}else{
+				taxid = gdl_string_clone(seq->name.s);
+			}
+			// get sequence name and check in taxid_to_labels hash //
+			//-----------------------------------------------------//
+			process = 1;
+			if(dico_flag == 1){
+				if((label_tx = gdl_hashtable_lookup (taxid_to_label, taxid)) == 0 ){
+					//new key
+       	                       		label_tx = GDL_CALLOC (size_t, 1);
+					if(ALGO == "MULTICLASS"){
+						*label_tx = (size_t) (nlabels);
+						nlabels++;
+					}
+					if(ALGO == "OVA"){
+						if(strcmp(taxid, LABEL1)){
+							*label_tx = (size_t) (1);
+						}else{
+							*label_tx = (size_t) (-1);
+						}
+					}
+					if(ALGO == "OVO"){
+						if(strcmp(taxid, LABEL1)){
+							*label_tx = (size_t) (1);
+						}else{
+							if(strcmp(taxid, LABEL2)){
+								*label_tx = (size_t) (-1);
+							}else{
+								process = 0;
+							}
+                       	         	        }
+                        	        }
+					// add to hash table
+					if(process){
+                                       		gdl_hashtable_add(taxid_to_label,taxid,label_tx,1);
+					}
+				}
+			}else{
+				label_tx = GDL_CALLOC (size_t, 1);
+				if(keeptaxid_flag){
+					*label_tx = (size_t) (atoi(taxid));
+				}else{
+					*label_tx = (size_t) (1);
+				}
+			}
+			// output kmers //
+			//--------------//
+			if(process){
+				// write label or taxid
+				if(stdout_flag){
+					printf("%d |", *label_tx);
+				}else{
+					fprintf(stream,"%d |", *label_tx);
+				}
+				// loop on kmer sizes
+				for(l = 0; l < n_kmer_sizes; l++){
+					kmer_size = kmer_sizes[l];
+					//test if the sequence length is greater than K
+					if(seq->seq.l > kmer_size){
+						for(i = 0; i <= seq->seq.l - kmer_size; i++){
+							// forward
+							gdl_string *kmer;
+       	                                 		kmer = 0;
+                                        		kmer = gdl_string_alloc (kmer_size);
+                                        		strncpy (kmer, seq->seq.s+i, kmer_size);
+	                                       	 	// convert to upper case
+	                                        	for(j = 0; j < strlen(kmer); j++){
+        	                                        	kmer[j] = toupper(kmer[j]);
+                	                        	}
+   							// print
+                                                	if(!stdout_flag){
+                                                               fprintf(stream," %s",kmer);
+                                                        }else{
+                                                                printf(" %s",kmer);
+                                                	}
+							// reverse
+							if(do_reverse){
+								gdl_string *rt_kmer;
+								rt_kmer = 0;
+       	                                         		rt_kmer = reverse_transcribe(kmer);
+                                                        	// print
+                                                       	 	if(!stdout_flag){
+                                                             	  	fprintf(stream," %s",rt_kmer);
+                                                        	}else{
+                                                               	 	printf(" %s",rt_kmer);
+                                                        	}
+								// free
+								gdl_string_free(rt_kmer);
+							}
+							// free kmer
+							gdl_string_free(kmer);
+						}
+					}else{
+						//simply out "forward" sequence, no upper-case transformation
+                                                if(!stdout_flag){
+                                                         fprintf(stream," %s",seq->seq.s);
+                                                }else{
+                                                         printf(" %s",seq->seq.s);
+                                                }
+					}
+                        	} 
+			
+				// empty line between sequences //
+                        	if(!stdout_flag){
+					fprintf(stream,"\n");
+				}else{
+					printf("\n");
+				} 
+			}
+			// free taxid string //
+			gdl_string_free(taxid);
+			taxid = 0;
+		} // -->  end loop on sequences
+
+		//-------------------//
+		// process I/O files //
+		//-------------------//
+		// close input file
+		kseq_destroy(seq);
+		gzclose(f);
+		// close output file
+		if(!stdout_flag)
+		{
+			gdl_fileclose (OUTPUT, stream);
+		}
+		// write hash-table if necessary	
+		if(dico_flag){
+			stream = gdl_fileopen(DICO, "w");
+			gdl_hashtable_itr * hash_itr = gdl_hashtable_iterator(taxid_to_label);
+			int * val = 0;
+			do {
+				val = (int *) gdl_hashtable_iterator_value(hash_itr);
+				fprintf(stream, "%s\t%d\n", gdl_hashtable_iterator_key(hash_itr),*val);
+			} while (gdl_hashtable_iterator_next(hash_itr));
+			gdl_hashtable_iterator_free(hash_itr);
+			gdl_fileclose (DICO, stream);
+		}
+		// free memory
+		gdl_string_free(INPUT);
+		if(dico_flag){
+	       		gdl_hashtable_free(taxid_to_label);
+			gdl_string_free(DICO);
+		}
+		if(!stdout_flag){
+			gdl_string_free(OUTPUT);
+		}
+	}
+	exit (0);
+}
+
+

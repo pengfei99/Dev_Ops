@@ -1,0 +1,33 @@
+/*
+ *  fasta.h
+ *
+ *  $Author: veyriejb $, $Date: 2011/05/12 13:53:37 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#ifndef __MGX_FASTA_H__
+#define __MGX_FASTA_H__
+
+#include <stdint.h>
+#include <stdlib.h>
+#include <sys/types.h>
+#include <stdio.h>
+#include <zlib.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_types.h>
+#include <gdl/gdl_string.h>
+
+__BEGIN_DECLS
+
+size_t mgx_fasta_totnucount    (FILE * stream);
+size_t mgx_fasta_totnucount_gz (gzFile stream);
+int mgx_fasta_file_totnucount (const gdl_string * filename, const gdl_boolean gzip);
+
+__END_DECLS
+
+#endif

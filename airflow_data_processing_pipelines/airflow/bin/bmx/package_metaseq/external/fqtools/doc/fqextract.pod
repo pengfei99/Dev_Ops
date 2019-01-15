@@ -1,0 +1,58 @@
+=pod
+
+=head1 NAME
+
+=over 4
+
+=item B<fqextract> - extract entries by name from FASTQ formatted files
+
+=back
+
+=head1 SYNOPSIS
+
+=over 4
+
+=item B<fqextract> [B<-hpx>] [B<-l> F<list>] F<file> ...
+
+=back
+
+=head1 OPTIONS
+
+Following command line options are allowed:
+
+=over 4
+
+=item -h
+
+Print a small help message and exits.
+
+=item -l F<list>
+
+Do extract/exclude the entry names provided in file F<list>. Unless
+specified, all entries will be extracted/ignored.
+
+=item -p
+
+Do not use the pair member information, if available, when comparing
+names to be extracted. This affects both entry list and sequence
+files.
+
+=item -x
+
+Invert selection beahviour. If set, all provided entries from list
+will be excluded (e.g. not extracted).
+
+=back
+
+=head1 DESCRIPTION
+
+B<fqextract> is a small tool designed to extract entries, specified by
+names, from FASTQ formatted sequence files.
+
+All extracted entries will be printed on the standard output stream.
+
+=head1 AUTHOR
+
+Nicolas Joly (njoly@pasteur.fr), Institut Pasteur.
+
+=cut

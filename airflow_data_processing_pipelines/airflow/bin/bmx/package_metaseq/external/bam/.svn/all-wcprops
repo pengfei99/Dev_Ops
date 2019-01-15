@@ -1,0 +1,131 @@
+K 25
+svn:wc:ra_dav:version-url
+V 42
+/svn/mixgenomix/!svn/ver/432/trunk/ext/bam
+END
+faidx.h
+K 25
+svn:wc:ra_dav:version-url
+V 50
+/svn/mixgenomix/!svn/ver/432/trunk/ext/bam/faidx.h
+END
+bam2bcf.h
+K 25
+svn:wc:ra_dav:version-url
+V 52
+/svn/mixgenomix/!svn/ver/432/trunk/ext/bam/bam2bcf.h
+END
+khash.h
+K 25
+svn:wc:ra_dav:version-url
+V 50
+/svn/mixgenomix/!svn/ver/432/trunk/ext/bam/khash.h
+END
+bam.h
+K 25
+svn:wc:ra_dav:version-url
+V 48
+/svn/mixgenomix/!svn/ver/432/trunk/ext/bam/bam.h
+END
+knetfile.h
+K 25
+svn:wc:ra_dav:version-url
+V 53
+/svn/mixgenomix/!svn/ver/432/trunk/ext/bam/knetfile.h
+END
+bam_maqcns.h
+K 25
+svn:wc:ra_dav:version-url
+V 55
+/svn/mixgenomix/!svn/ver/432/trunk/ext/bam/bam_maqcns.h
+END
+ksort.h
+K 25
+svn:wc:ra_dav:version-url
+V 50
+/svn/mixgenomix/!svn/ver/432/trunk/ext/bam/ksort.h
+END
+razf.h
+K 25
+svn:wc:ra_dav:version-url
+V 49
+/svn/mixgenomix/!svn/ver/432/trunk/ext/bam/razf.h
+END
+kseq.h
+K 25
+svn:wc:ra_dav:version-url
+V 49
+/svn/mixgenomix/!svn/ver/432/trunk/ext/bam/kseq.h
+END
+kprobaln.h
+K 25
+svn:wc:ra_dav:version-url
+V 53
+/svn/mixgenomix/!svn/ver/432/trunk/ext/bam/kprobaln.h
+END
+glf.h
+K 25
+svn:wc:ra_dav:version-url
+V 48
+/svn/mixgenomix/!svn/ver/432/trunk/ext/bam/glf.h
+END
+bam_endian.h
+K 25
+svn:wc:ra_dav:version-url
+V 55
+/svn/mixgenomix/!svn/ver/432/trunk/ext/bam/bam_endian.h
+END
+sam.h
+K 25
+svn:wc:ra_dav:version-url
+V 48
+/svn/mixgenomix/!svn/ver/432/trunk/ext/bam/sam.h
+END
+kstring.h
+K 25
+svn:wc:ra_dav:version-url
+V 52
+/svn/mixgenomix/!svn/ver/432/trunk/ext/bam/kstring.h
+END
+sample.h
+K 25
+svn:wc:ra_dav:version-url
+V 51
+/svn/mixgenomix/!svn/ver/432/trunk/ext/bam/sample.h
+END
+kaln.h
+K 25
+svn:wc:ra_dav:version-url
+V 49
+/svn/mixgenomix/!svn/ver/432/trunk/ext/bam/kaln.h
+END
+klist.h
+K 25
+svn:wc:ra_dav:version-url
+V 50
+/svn/mixgenomix/!svn/ver/432/trunk/ext/bam/klist.h
+END
+.cvsignore
+K 25
+svn:wc:ra_dav:version-url
+V 53
+/svn/mixgenomix/!svn/ver/432/trunk/ext/bam/.cvsignore
+END
+errmod.h
+K 25
+svn:wc:ra_dav:version-url
+V 51
+/svn/mixgenomix/!svn/ver/432/trunk/ext/bam/errmod.h
+END
+bgzf.h
+K 25
+svn:wc:ra_dav:version-url
+V 49
+/svn/mixgenomix/!svn/ver/432/trunk/ext/bam/bgzf.h
+END
+sam_header.h
+K 25
+svn:wc:ra_dav:version-url
+V 55
+/svn/mixgenomix/!svn/ver/432/trunk/ext/bam/sam_header.h
+END

@@ -1,0 +1,376 @@
+/*
+ *  bloom.c
+ *
+ *  $Author: veyriejb $, $Date: 2011/05/12 16:47:57 $, $Version$
+ *
+ *  MetagenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+#include <stdint.h>
+#include <limits.h>
+#include <stdarg.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_types.h>
+#include <gdl/gdl_io.h>
+#include <gdl/gdl_math.h>
+#include <gdl/gdl_rng.h>
+#include <gdl/gdl_bit_vector.h>
+#include <gdl/gdl_hash.h>
+#include <gdl/gdl_list.h>
+
+#include"bloom.h"
+
+static void
+find_optimal_parameters (const double fdr, const size_t n, size_t * salt_count, size_t * table_size)
+{
+  double k;
+  double min_m  = GDL_POSINF;
+  double min_k  = 0.0;
+  double curr_m = 0.0;
+
+  for(k = 0.0; k < 1000.0; ++k)
+  {
+	 if ((curr_m = ((- k * n) / log(1.0 - pow(fdr, 1.0 / k)))) < min_m)
+	 {
+		min_m = curr_m;
+		min_k = k;
+	 }
+  }
+  *salt_count  = (size_t)floor(min_k);
+  *table_size  = (size_t)floor(min_m);
+}
+
+static ulong *
+generate_unique_salt (const size_t salt_count, const gdl_rng * rng)
+{
+ size_t i, j;
+
+ ulong * salt = GDL_CALLOC (ulong, salt_count);
+
+ while(i < salt_count)
+ {
+	ulong current_salt = gdl_rng_uniform_int(rng, UINT_MAX);
+	if (0 == current_salt)
+	{
+		continue;
+	}
+	// check that this value has not been yet inserted
+	for(j = 0; j < i; j++)
+	{
+		if (salt[j] == current_salt)
+		{
+			break;
+		}
+	}
+	if (j == i)
+	{
+	   salt[i++] = current_salt;
+	}
+ }
+
+ return salt;
+}
+
+mgx_bloom_filter *
+mgx_bloom_filter_alloc(const ulong predicted_element_count, const double false_positive_probability, const mgx_hashfunc_type * hashfunc_t, const gdl_rng * rng)
+{
+	size_t n;
+	mgx_bloom_filter * bloom;
+
+	bloom = GDL_CALLOC (mgx_bloom_filter, 1);
+
+	bloom->pec        = predicted_element_count;
+	bloom->fpp        = false_positive_probability;
+	bloom->hashfunc_t = hashfunc_t;
+	// initialize
+	find_optimal_parameters (false_positive_probability, predicted_element_count, &(bloom->salt_count), &(bloom->table_size));
+	bloom->salts     = generate_unique_salt (bloom->salt_count, rng);
+    bloom->bit_table = gdl_bit_vector_alloc (bloom->table_size);
+
+	return bloom;
+}
+
+int
+mgx_bloom_filter_free (mgx_bloom_filter * bloom)
+{
+	if (bloom)
+	{
+		GDL_FREE (bloom->salts);
+		gdl_bit_vector_free (bloom->bit_table);
+		GDL_FREE (bloom);
+	}
+}
+
+int
+mgx_bloom_filter_add (mgx_bloom_filter * bloom, const gdl_string * key, const size_t length)
+{
+  size_t i, bit_index;
+
+  for(i = 0; i < bloom->salt_count; i++)
+  {
+	 bit_index = (bloom->hashfunc_t->hashfunc)(key, length, bloom->table_size, bloom->salts[i]);
+	 gdl_bit_vector_set(bloom->bit_table, bit_index);
+  }
+
+  return ++(bloom->inserted_element_count);
+}
+
+gdl_boolean
+mgx_bloom_filter_check (mgx_bloom_filter * bloom, const gdl_string * key, const size_t length)
+{
+	size_t i, bit_index;
+
+	for(i = 0; i < bloom->salt_count; i++)
+	{
+		bit_index = (bloom->hashfunc_t->hashfunc)(key, length, bloom->table_size, bloom->salts[i]);
+		if (!gdl_bit_vector_get(bloom->bit_table, bit_index))
+		{
+			return gdl_false;
+		}
+	}
+	return gdl_true;
+}
+
+double
+mgx_bloom_filter_effective_fpp (const mgx_bloom_filter * bloom)
+{
+   return pow(1.0 - exp(-1.0 * bloom->salt_count * bloom->inserted_element_count / bloom->table_size), 1.0 * bloom->salt_count);
+}
+
+mgx_bloom_filter *
+mgx_bloom_filter_fread (FILE * stream)
+{
+	if (stream)
+	{
+		int status;
+		gdl_string * hash_name;
+		mgx_bloom_filter * bloom;
+
+		bloom = GDL_CALLOC (mgx_bloom_filter, 1);
+
+		status = fread (&(bloom->pec), sizeof(ulong), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		status = fread (&(bloom->fpp), sizeof(double), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		status = fread (&(bloom->salt_count), sizeof(ulong), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		status = fread (&(bloom->table_size), sizeof(ulong), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		status = fread (&(bloom->inserted_element_count), sizeof(ulong), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		bloom->salts = GDL_MALLOC (ulong, bloom->salt_count);
+		status = fread (bloom->salts, sizeof(ulong), bloom->salt_count, stream);
+		GDL_FREAD_STATUS (status, bloom->salt_count);
+		bloom->bit_table = gdl_bit_vector_fread(stream);
+		GDL_FREAD_STATUS (bloom->bit_table!=0, 1);
+		hash_name = gdl_string_fread (stream);
+		GDL_FREAD_STATUS (hash_name!=0, 1);
+		bloom->hashfunc_t = mgx_hashfunc_type_lookup (hash_name);
+		gdl_string_free (hash_name);
+
+		return bloom;
+	}
+
+	return 0;
+}
+
+int
+mgx_bloom_filter_fwrite (FILE * stream, const mgx_bloom_filter * bloom)
+{
+	if (stream && bloom)
+	{
+		int status;
+
+		status = fwrite (&(bloom->pec), sizeof(ulong), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		status = fwrite (&(bloom->fpp), sizeof(double), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		status = fwrite (&(bloom->salt_count), sizeof(ulong), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		status = fwrite (&(bloom->table_size), sizeof(ulong), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		status = fwrite (&(bloom->inserted_element_count), sizeof(ulong), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		status = fwrite (bloom->salts, sizeof(ulong), bloom->salt_count, stream);
+		GDL_FWRITE_STATUS (status, bloom->salt_count);
+		status = gdl_bit_vector_fwrite(stream, bloom->bit_table);
+		GDL_FWRITE_STATUS (status, GDL_SUCCESS);
+		status = gdl_string_fwrite (stream, bloom->hashfunc_t->name);
+		GDL_FWRITE_STATUS (status, GDL_SUCCESS);
+
+		return GDL_SUCCESS;
+	}
+
+	return GDL_EINVAL;
+}
+
+
+static gdl_hashtable *
+_mgx_bloom_classifier_readfilters (const gdl_string * input_file)
+{
+	FILE * stream;
+	size_t i,j,n;
+	gdl_string * line=0, * tok;
+	gdl_hashtable * buffer;
+
+	stream = gdl_fileopen (input_file, "r");
+
+	buffer = gdl_hashtable_alloc (gdl_string_interface, 0);
+
+	while(gdl_getline (&line, &n, stream)!=-1)
+	{
+		i=j=0;
+		tok = gdl_string_next_token (line, n, &i, &j);
+		gdl_hashtable_add(buffer, tok,  gdl_string_next_token (line, n, &i, &j), 1);
+		gdl_string_free (tok);
+		gdl_string_free (line);
+		line=0;
+	}
+
+	gdl_fileclose (input_file, stream);
+
+	return buffer;
+}
+
+mgx_bloom_classifier *
+mgx_bloom_classifier_alloc (const gdl_string * filename, const size_t k)
+{
+	FILE * stream;
+	size_t i;
+	gdl_hashtable    * filter_table;
+	mgx_bloom_classifier * bloom;
+
+	filter_table = _mgx_bloom_classifier_readfilters (filename);
+
+	bloom = GDL_CALLOC (mgx_bloom_classifier, 1);
+
+	bloom->k        = k;
+	bloom->nclass   = gdl_hashtable_size (filter_table);
+	bloom->labels   = GDL_MALLOC (gdl_string *, bloom->nclass);
+	bloom->filters  = GDL_MALLOC (mgx_bloom_filter *, bloom->nclass);
+
+	gdl_hashtable_itr *  itr_filters = gdl_hashtable_iterator (filter_table);
+	i = 0;
+	do
+	{
+		bloom->labels[i]   = gdl_string_clone (gdl_hashtable_iterator_key (itr_filters));
+		stream             = gdl_fileopen (gdl_hashtable_iterator_value (itr_filters), "r");
+		bloom->filters[i]  = mgx_bloom_filter_fread(stream);
+		gdl_fileclose (gdl_hashtable_iterator_value (itr_filters), stream);
+		i++;
+	}
+	while (gdl_hashtable_iterator_next (itr_filters));
+	gdl_hashtable_iterator_free (itr_filters);
+
+	return bloom;
+}
+
+void
+mgx_bloom_classifier_free (mgx_bloom_classifier * bloom)
+{
+	if (bloom)
+	{
+		size_t i;
+		for(i = 0; i < bloom->nclass; i++)
+		{
+			gdl_string_free (bloom->labels[i]);
+			mgx_bloom_filter_free (bloom->filters[i]);
+		}
+		GDL_FREE (bloom->labels);
+		GDL_FREE (bloom->filters);
+		GDL_FREE (bloom->_item_counts);
+		GDL_FREE (bloom);
+	}
+}
+
+void
+mgx_bloom_classifier_item_init (mgx_bloom_classifier * bloom)
+{
+	size_t i;
+
+	if (!bloom->_item_counts)
+	{
+		bloom->_item_counts = GDL_MALLOC (size_t, bloom->nclass+1);
+	}
+	for(i = 0; i < bloom->nclass+1; i++)
+	{
+		bloom->_item_counts[i] = 0;
+	}
+}
+
+void
+mgx_bloom_classifier_item_slide (mgx_bloom_classifier * bloom, const gdl_string * kmer)
+{
+	size_t i, in;
+
+
+	for(i = in = 0; i < bloom->nclass; i++)
+	{
+		if (mgx_bloom_filter_check (bloom->filters[i], kmer, bloom->k))
+		{
+			(bloom->_item_counts[i])++;
+			in=1;
+		}
+	}
+	if (!in)
+	{
+		(bloom->_item_counts[i])++;
+	}
+}
+
+int
+mgx_bloom_classifier_header_output (FILE * stream, mgx_bloom_classifier * bloom, const size_t output_mode)
+{
+	if (output_mode)
+	{
+		return GDL_SUCCESS;
+	}
+	else
+	{
+		size_t i;
+		for(i = 0; i < bloom->nclass; i++)
+		{
+			if (i) fprintf(stream, "\t");
+			fprintf (stream, "%s", bloom->labels[i]);
+		}
+		fprintf (stream, "\n");
+		fflush (stream);
+	}
+	return GDL_SUCCESS;
+}
+
+int
+mgx_bloom_classifier_item_output (FILE * stream, mgx_bloom_classifier * bloom, const size_t output_mode)
+{
+	size_t i;
+
+	if (output_mode)
+	{
+		size_t j;
+
+		for(i = j = 0; i < bloom->nclass; i++)
+		{
+			if (bloom->_item_counts[i])
+			{
+				if (j) fprintf(stream, ";");
+				fprintf (stream, "%s:%ld", bloom->labels[i], bloom->_item_counts[i]);
+				j++;
+			}
+		}
+	}
+	else
+	{
+		for(i = 0; i < bloom->nclass; i++)
+		{
+			if (i) fprintf(stream, "\t");
+			fprintf (stream, "%ld", bloom->_item_counts[i]);
+		}
+	}
+	fprintf (stream, "\n");
+	fflush (stream);
+	return GDL_SUCCESS;
+}

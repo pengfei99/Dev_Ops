@@ -1,0 +1,64 @@
+/*
+ *  bloom.h
+ *
+ *  $Author: veyriejb $, $Date: 2011/05/12 16:35:04 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#ifndef __GDL_BLOOM_H__
+#define __GDL_BLOOM_H__
+
+#include <stdint.h>
+#include <stdlib.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_types.h>
+#include <gdl/gdl_bit_vector.h>
+
+#include "hash.h"
+
+__BEGIN_DECLS
+
+typedef struct {
+	ulong pec;
+	double fpp;
+	ulong salt_count;
+	ulong table_size;
+	ulong inserted_element_count;
+	ulong * salts;
+	gdl_bit_vector * bit_table;
+	const mgx_hashfunc_type * hashfunc_t;
+} mgx_bloom_filter;
+
+mgx_bloom_filter * mgx_bloom_filter_alloc(const ulong predicted_element_count, const double false_positive_probability, const mgx_hashfunc_type * hashfunc_t, const gdl_rng * rng);
+int mgx_bloom_filter_free(mgx_bloom_filter * bloom);
+int mgx_bloom_filter_add(mgx_bloom_filter * bloom, const gdl_string * key, const size_t length);
+double mgx_bloom_filter_effective_fpp (const mgx_bloom_filter * bloom);
+gdl_boolean mgx_bloom_filter_check(mgx_bloom_filter * bloom, const gdl_string * key, const size_t length);
+
+mgx_bloom_filter * mgx_bloom_filter_fread (FILE * stream);
+int mgx_bloom_filter_fwrite (FILE * stream, const mgx_bloom_filter * bloom);
+
+typedef struct
+{
+	size_t k;                     // the kmer length
+	size_t nclass;                // the number of class
+	gdl_string ** labels;         // the labels of the class
+	mgx_bloom_filter ** filters;  // [1..nclass] --> bloom filter
+	size_t * _item_counts;
+} mgx_bloom_classifier;
+
+mgx_bloom_classifier * mgx_bloom_classifier_alloc (const gdl_string * filename, const size_t k);
+void mgx_bloom_classifier_free (mgx_bloom_classifier * bloom);
+void mgx_bloom_classifier_item_init (mgx_bloom_classifier * bloom);
+void mgx_bloom_classifier_item_slide (mgx_bloom_classifier * bloom, const gdl_string * kmer);
+int mgx_bloom_classifier_item_output (FILE * stream, mgx_bloom_classifier * bloom, const size_t output_mode);
+int mgx_bloom_classifier_header_output (FILE * stream, mgx_bloom_classifier * bloom, const size_t output_mode);
+
+__END_DECLS
+
+#endif

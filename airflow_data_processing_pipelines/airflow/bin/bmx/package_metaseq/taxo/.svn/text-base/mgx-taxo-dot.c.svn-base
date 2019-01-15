@@ -1,0 +1,370 @@
+/*
+ *  mgx-taxolca.c
+ *
+ *  $Author: tournoum $, $Date: 2011/09/23 10:23:14 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+#include <ctype.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_io.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_seq_io.h>
+
+#include "mixgenomix.h"
+#include "gzutil.h"
+#include "taxo.h"
+
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-taxo2dot";
+
+static int help_flag    = 0;
+static int verbose_flag = 0;
+static int no_missing_flag = 0;
+static int taxid_flag = 0;
+static int color_rank =  0;
+
+static gdl_string * TAXODB   = NULL;
+static gdl_string * OUTPUT   = NULL;
+static gdl_string * DOTOPT   = NULL;
+static gdl_string * OPTION   = NULL;
+static gdl_string * LABEL   = NULL;
+
+static struct option long_options[] =
+ {
+   /* These options set a flag. */
+   {"help", no_argument,          &help_flag, 1},
+   {"verbose", no_argument,       &verbose_flag, 1},
+   {"brief",   no_argument,       &verbose_flag, 0},
+   {"no-missing",   no_argument,       &no_missing_flag, 1},
+   {"taxid",   no_argument,       &taxid_flag, 1},
+   {"rankcol",   no_argument,       &color_rank, 1},
+   /* These options don't set a flag.
+      We distinguish them by their indices. */
+   {"output",   required_argument, 0, 'o'},
+   {"option",   required_argument, 0, 'p'},
+   {"taxodb",   required_argument, 0, 't'},
+   {"dotopt",   required_argument, 0, 'd'},
+   {"label",   required_argument, 0, 'l'},   
+   {0, 0, 0, 0}
+ };
+
+static int
+parse_argument (int argc, char *argv[])
+{
+	int c;
+
+   while (1)
+     {
+
+       /* getopt_long stores the option index here. */
+       int option_index = 0;
+
+       c = getopt_long (argc, argv, "o:t:d:p:l:",
+                        long_options, &option_index);
+
+       /* Detect the end of the options. */
+       if (c == -1)
+         break;
+
+       switch (c)
+         {
+         case 0:
+           /* If this option set a flag, do nothing else now. */
+           if (long_options[option_index].flag != 0)
+             break;
+           printf ("option %s", long_options[option_index].name);
+           if (optarg)
+             printf (" with arg %s", optarg);
+           printf ("\n");
+           break;
+
+         case 'o':
+           OUTPUT = gdl_string_clone (optarg);
+           break;
+         case 't':
+		   TAXODB = gdl_string_clone (optarg);
+		   break;
+         case 'd':
+		   DOTOPT = gdl_string_clone (optarg);
+		   break;
+         case 'p':
+           	OPTION = gdl_string_clone (optarg);
+           	break;
+         case 'l':
+           	LABEL = gdl_string_clone (optarg);
+           	break;
+	case '?':
+           GDL_ERROR_VAL ("Unknown arguments", GDL_EINVAL, -1);
+         default:
+           GDL_ERROR_VAL ("Bad arguments", GDL_EINVAL, -1);
+         }
+     }
+}
+
+static int
+check_argument (void)
+{
+	if (OUTPUT == 0)
+	{
+		GDL_ERROR_VAL ("No output file provided",
+					   GDL_FAILURE,
+					   1);
+	}
+	if (TAXODB == 0)
+	{
+		GDL_ERROR_VAL ("No taxonomy database file provided",
+					   GDL_FAILURE,
+					   1);
+	}
+
+	if(color_rank & OPTION !=0){
+		printf("WARNING : you cannot use option together with rankcol flag. Coloring nodes only !\n");
+	}
+
+
+	return GDL_SUCCESS;
+}
+
+
+static int
+help (void)
+{
+   print_header (PROGRAM);
+   printf ("\n");
+   printf ("--help\tDisplay a brief help on program usage\n");
+   printf ("--verbose\tOutput message on standard output to see what the program is doing\n");
+   printf ("\n");
+   printf ("--output or -o \tThe output file");
+   printf ("--taxodb or -t \tThe taxonomy database file\n");
+   printf ("--dotopt or -d \tDot options (graph level)\n");
+   printf ("--option or -p \t file with 2 columns: first column taxid, options to be given \n");
+   printf ("--label or -l \t file with 2 columns: first column taxid, additional label \n");
+   printf ("--taxid \t use taxids as node labels (default : names[0])\n");
+   printf ("--rankcol \t color nodes according to their ranks\n");
+}
+
+
+
+gdl_hashtable *
+read_optionfile (const FILE * streamOptions)
+{
+	size_t i,j,n;
+	gdl_string * line=0, * tok1, *tok2;
+	gdl_hashtable * hashOptions;
+
+	hashOptions = gdl_hashtable_alloc (gdl_hash_default, 0);
+
+	while(gdl_getline (&line, &n, streamOptions)!=-1)
+	{
+		i=j=0;
+		tok1 = gdl_string_next_token (line, n, &i, &j); // taxon id
+		tok2 = gdl_string_next_token (line, n, &i, &j); // options
+		if (gdl_hashtable_lookup(hashOptions, tok1)) {
+			GDL_ERROR_VAL("You should provide a file with 1 line per taxonid", GDL_FAILURE, NULL);
+		} else {
+			gdl_hashtable_add(hashOptions, tok1, tok2, 0);
+		}
+		gdl_string_free (line);
+		line=0;
+	}
+	//
+	return hashOptions;
+}
+
+
+int
+main (int argc, char *argv[])
+{
+  int status;
+
+  parse_argument (argc, argv);
+
+  if (help_flag)
+  {
+  	  exit (help());
+  }
+
+  status = check_argument ();
+
+  if (status == GDL_SUCCESS)
+  {
+
+
+	mgx_taxonomy * taxonomy;
+        FILE * stream;
+        size_t i, j;
+        char edge[1000];
+ 	gdl_string * options, *label;
+
+        // read node options
+        gdl_hashtable * hashOptions =0;
+        if(OPTION != 0)
+        {
+        	printf("reading an option file \n");
+        	stream= gdl_fileopen (OPTION, "r");
+        	hashOptions = read_optionfile (stream);
+		gdl_fileclose(OPTION, stream);
+        }
+	// read node labels
+        gdl_hashtable * hashLabel =0;
+        if(LABEL != 0)
+        {
+        	printf("reading a label file \n");
+        	stream= gdl_fileopen (LABEL, "r");
+        	hashLabel = read_optionfile (stream);
+		gdl_fileclose(LABEL, stream);		
+	}
+
+	// build rank to color hash table	 
+ 	gdl_hashtable * hashColor =0;
+	if(color_rank){
+		hashColor = gdl_hashtable_alloc (gdl_hash_default, 0);
+		// species
+		gdl_hashtable_add(hashColor, "Subspecies",  "style=filled, fillcolor=grey", 0);
+		gdl_hashtable_add(hashColor, "subspecies",  "style=filled, fillcolor=grey", 0);
+		// species
+		gdl_hashtable_add(hashColor, "Species",  "style=filled, fillcolor=skyblue2", 0);
+		gdl_hashtable_add(hashColor, "species",  "style=filled, fillcolor=skyblue2", 0);
+		// genus
+		gdl_hashtable_add(hashColor, "Genus",  "style=filled, fillcolor=palegreen2", 0);
+		gdl_hashtable_add(hashColor, "genus",  "style=filled, fillcolor=palegreen2", 0);
+		// class
+		gdl_hashtable_add(hashColor, "Family",  "style=filled, fillcolor=mediumpurple2", 0);
+		gdl_hashtable_add(hashColor, "family",  "style=filled, fillcolor=mediumpurple2", 0);
+		// order
+		gdl_hashtable_add(hashColor, "Order",  "style=filled, fillcolor=orange", 0);
+		gdl_hashtable_add(hashColor, "order",  "style=filled, fillcolor=orange", 0);
+		// family
+		gdl_hashtable_add(hashColor, "Class",  "style=filled, fillcolor=yellow", 0);
+		gdl_hashtable_add(hashColor, "Class",  "style=filled, fillcolor=yellow", 0);
+		// phylum
+		gdl_hashtable_add(hashColor, "Phylum",  "style=filled, fillcolor=chocolate4", 0);
+		gdl_hashtable_add(hashColor, "phylum",  "style=filled, fillcolor=chocolate4", 0);
+		// super-kingdom
+		gdl_hashtable_add(hashColor, "Kingdom",  "style=filled, fillcolor=red", 0);
+		gdl_hashtable_add(hashColor, "kingdom",  "style=filled, fillcolor=red", 0);
+	}
+	
+
+        // read taxonomy
+	    stream   = gdl_fileopen (TAXODB, "r");
+	    taxonomy = mgx_taxonomy_fread (stream);
+	    gdl_fileclose (TAXODB, stream);
+
+	    if(verbose_flag){
+	    	printf("\n\nTaxonomy succesfully read, summary : \n");
+			printf("\t-number of nodes = %d\n", taxonomy->ntaxon);
+			printf("\t-maximum depth = %d\n", taxonomy->maxdepth);
+			printf("\t-root node ID = %s\n", taxonomy->root->names[0]);
+	    }
+
+	     // open output file
+	    stream = gdl_fileopen (OUTPUT, "w");
+
+	    // write header
+	    fprintf(stream,"digraph G {\n");
+	    // write dot options
+	    if(DOTOPT != NULL){
+	    	fprintf(stream, "%s\n", DOTOPT);
+	    }
+	    // write node labels
+	 for(i = 0; i < taxonomy->ntaxon; i++){
+			options = 0;
+			label = 0;
+			if(hashOptions !=0)
+			{
+				// NB : focus on input file with TAXIDS on the 1st column
+				//if(taxid_flag){
+				gdl_string * currentTaxon = gdl_string_alloc(100);
+				sprintf (currentTaxon,"%d",taxonomy->taxons[i]->id);
+				options = gdl_hashtable_lookup(hashOptions,currentTaxon);
+				gdl_string_free(currentTaxon);
+				//}else{
+				//	options = gdl_hashtable_lookup(hashOptions,taxonomy->taxons[i]->names[0]);
+				//}
+			}
+			if(hashLabel !=0)
+			{
+				// NB : focus on input file with TAXIDS on the 1st column
+				//if(taxid_flag){
+				gdl_string * currentTaxon = gdl_string_alloc(100);
+				sprintf (currentTaxon,"%d",taxonomy->taxons[i]->id);
+				label = gdl_hashtable_lookup(hashLabel,currentTaxon);
+				gdl_string_free(currentTaxon);
+				//}else{
+				//	options = gdl_hashtable_lookup(hashOptions,taxonomy->taxons[i]->names[0]);
+				//}
+			}
+			if(color_rank){
+				options = gdl_hashtable_lookup(hashColor, taxonomy->ranks->rank_names[taxonomy->ranks->rid2tx[i]]);
+			}
+
+		    	if (taxid_flag){
+		    		//if(hashOptions !=0 & options!=0){
+		    		if(options!=0){
+					if(hashLabel != 0 & label !=0){
+						fprintf(stream,"\t%d [label = \"%d (%s)\", %s];\n", taxonomy->taxons[i]->index, taxonomy->taxons[i]->id, label, options);
+					}else{
+        			         	fprintf(stream,"\t%d [label = \"%d\", %s];\n", taxonomy->taxons[i]->index, taxonomy->taxons[i]->id, options);
+
+					}
+		    		}else{
+					if(hashLabel != 0 & label !=0){
+					    	fprintf(stream, "\t%d [label = \"%d (%s)\"];\n", taxonomy->taxons[i]->index, taxonomy->taxons[i]->id, label);
+					}else{
+					    	fprintf(stream, "\t%d [label = \"%d\"];\n", taxonomy->taxons[i]->index, taxonomy->taxons[i]->id);
+					}
+		    		}
+			}else{
+		    		//if(hashOptions !=0 & options!=0){
+		    		if(options!=0){
+					if(hashLabel != 0 & label !=0){
+						fprintf(stream,"\t%d [label = \"%s (%s)\", %s];\n", taxonomy->taxons[i]->index, taxonomy->taxons[i]->names[0], label, options);
+					}else{
+        			         	fprintf(stream,"\t%d [label = \"%s\", %s];\n", taxonomy->taxons[i]->index, taxonomy->taxons[i]->names[0], options);
+					}
+		    		}else{
+					if(hashLabel != 0 & label !=0){
+					    	fprintf(stream, "\t%d [label = \"%s (%s)\"];\n", taxonomy->taxons[i]->index, taxonomy->taxons[i]->names[0], label);
+					}else{
+					    	fprintf(stream, "\t%d [label = \"%s\"];\n", taxonomy->taxons[i]->index, taxonomy->taxons[i]->names[0]);
+					}
+		    		}
+		    	}
+		}
+
+	    // write edges and edges
+		for(i = 0; i < taxonomy->ntaxon; i++){
+			for(j = 0; j < taxonomy->taxons[i]->nchild; j ++){
+				fprintf(stream, "\t%d -> %d;\n", taxonomy->taxons[i]->index, taxonomy->taxons[i]->children[j]->index);
+			}
+		}
+		// write footer
+	    fprintf(stream,"}");
+		// close output file
+		gdl_fileclose (OUTPUT, stream);
+
+
+  }
+
+  exit (0);
+}
+

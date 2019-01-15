@@ -1,0 +1,184 @@
+/*
+ *  mgx-faststat.c
+ *
+ *  $Author: veyriejb $, $Date: 2011/12/07 17:43:40 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+ /**
+ * \file mgx-faststat.c
+ * \brief This program computes simple statistics from a fasta file
+ * \author Jean-Baptiste Veyrieras
+ * \version 1.0
+ * \date November 1 2011
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_list.h>
+#include <gdl/gdl_hash.h>
+
+// mixgenomix header
+#include <utils/gzutil.h>
+
+#include "mixgenomix.h"
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-faststat";
+
+static int help_flag = 0;
+static int verbose_flag = 0;
+
+static gdl_string * INPUT      = NULL;  // name of the input Fasta file
+
+static struct option long_options[] = {
+/* These options set a flag. */
+{ "help", no_argument, &help_flag, 1 },
+{ "verbose", no_argument, &verbose_flag, 1 },
+{ "brief", no_argument, &verbose_flag, 2 },
+/* These options don't set a flag.
+ We distinguish them by their indices. */
+{ "input", required_argument, 0, 'i' },
+{ 0, 0, 0, 0 } };
+
+static int parse_argument(int argc, char *argv[]) {
+	int c;
+	while (1) {
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+		c = getopt_long(argc, argv, "i:", long_options, &option_index);
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+		switch (c) {
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf("option %s", long_options[option_index].name);
+			if (optarg)
+				printf(" with arg %s", optarg);
+			printf("\n");
+			break;
+		case 'i':
+			INPUT = gdl_string_clone(optarg);
+			break;
+		case '?':
+			GDL_ERROR_VAL("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+/**
+ * \fn static int check_argument(void)
+ * \brief This function checks the main function arguments.
+ * \return a success indicator
+ */
+static int check_argument(void) {
+	if (INPUT == 0) {
+		GDL_ERROR_VAL("No input fasta file provided", GDL_FAILURE, 1);
+	}
+	return GDL_SUCCESS;
+}
+
+/**
+ * \fn static int help(void)
+ * \brief This function prints the help
+ */
+static int help(void) {
+	print_header(PROGRAM);
+	printf("\n");
+	printf("--help\tDisplay a brief help on program usage\n");
+	printf("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf("\n");
+	printf("--input or -i\tAn input fasta file\n");
+}
+
+int main(int argc, char *argv[])
+{
+	int status;
+	parse_argument(argc, argv);
+	if (help_flag) {
+		exit(help());
+	}
+
+	status = check_argument();
+
+	if (status == GDL_SUCCESS) {
+
+		int c;
+		size_t nseq = 0, seqlen = 0, nr = 0, na, nc, ng, nt;
+		size_t i, j, n, maxlen;
+		gdl_string * line = 0;
+		mgxFILE * fh;
+
+		// Read the sequence fasta file
+		if (verbose_flag)
+		{
+			fprintf(stderr, "[mgx-faststat] open the file %s\n", INPUT);
+		}
+		fh = mgx_fileopen(INPUT, "r", mgx_getzipmode (INPUT));
+		while ((c=mgx_getc(fh))!=EOF)
+		{
+			if (c=='>')
+			{
+				if (nseq) fprintf(stdout, "\t%ld\t%ld\t%ld\t%ld\t%ld\t%ld\n", seqlen, na, nt, ng, nc, nr);
+                                seqlen=na=nc=ng=nt=nr=0;
+				nseq++;
+				while((c=mgx_getc(fh))!='\n')
+				{
+					fputc(c, stdout);
+				}
+			}
+			else if (!isspace(c))
+			{
+			      switch(tolower(c))
+			      {
+				 case 'a':
+                                   na++;
+                                   break;
+				 case 't':
+                                   nt++;
+                                   break;
+				 case 'g':
+                                   ng++;
+                                   break;
+				 case 'c':
+                                   nc++;
+				    break;
+				 default:
+                                    nr++;
+				    break;
+			      }
+			    seqlen++;
+			}
+		}
+		// last sequence
+                fprintf(stdout, "\t%ld\t%ld\t%ld\t%ld\t%ld\t%ld\n", seqlen, na, nt, ng, nc, nr);
+		if (verbose_flag)
+		{
+			fprintf(stderr, "[mgx-faststat] found %ld sequences\n", nseq);
+		}
+		mgx_fileclose (INPUT, fh);
+	}
+
+	exit(0);
+}

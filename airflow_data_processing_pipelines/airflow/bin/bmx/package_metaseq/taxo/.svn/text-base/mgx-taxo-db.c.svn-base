@@ -1,0 +1,212 @@
+/*
+ *  mgx-taxodb.c
+ *
+ *  $Author: mahep $, $Date: 2011/08/18 09:20:50 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+#include <ctype.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_io.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_seq_io.h>
+
+#include "mixgenomix.h"
+#include "gzutil.h"
+#include "taxo.h"
+
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-taxodb";
+
+static int help_flag    = 0;
+static int verbose_flag = 0;
+static int lca_prepare_flag = 0;
+
+static gdl_string * INPUT    = NULL;
+static gdl_string * OUTPUT   = NULL;
+static gdl_string * FORMAT   = "ncbi";
+
+static struct option long_options[] =
+ {
+   /* These options set a flag. */
+   {"help", no_argument,          &help_flag, 1},
+   {"verbose", no_argument,       &verbose_flag, 1},
+   {"brief",   no_argument,       &verbose_flag, 0},
+   {"lca-prepare",   no_argument,       &lca_prepare_flag, 1},
+   /* These options don't set a flag.
+      We distinguish them by their indices. */
+   {"output",   required_argument, 0, 'o'},
+   {"input",   required_argument, 0, 'i'},
+   {"format",   required_argument, 0, 'f'},
+   {0, 0, 0, 0}
+ };
+
+static int
+parse_argument (int argc, char *argv[])
+{
+	int c;
+
+   while (1)
+     {
+
+       /* getopt_long stores the option index here. */
+       int option_index = 0;
+
+       c = getopt_long (argc, argv, "i:o:f:",
+                        long_options, &option_index);
+
+       /* Detect the end of the options. */
+       if (c == -1)
+         break;
+
+       switch (c)
+         {
+         case 0:
+           /* If this option set a flag, do nothing else now. */
+           if (long_options[option_index].flag != 0)
+             break;
+           printf ("option %s", long_options[option_index].name);
+           if (optarg)
+             printf (" with arg %s", optarg);
+           printf ("\n");
+           break;
+
+ 		 case 'i':
+           INPUT = gdl_string_clone (optarg);
+           break;
+         case 'o':
+           OUTPUT = gdl_string_clone (optarg);
+           break;
+         case 'f':
+		   FORMAT = gdl_string_clone (optarg);
+		   break;
+         case '?':
+           GDL_ERROR_VAL ("Unknown arguments", GDL_EINVAL, -1);
+         default:
+           GDL_ERROR_VAL ("Bad arguments", GDL_EINVAL, -1);
+         }
+     }
+}
+
+static int
+check_argument (void)
+{
+
+	if (INPUT == 0)
+	{
+		GDL_ERROR_VAL ("No input file provided",
+					   GDL_FAILURE,
+					   1);
+	}
+	if (OUTPUT == 0)
+	{
+		GDL_ERROR_VAL ("No output file provided",
+					   GDL_FAILURE,
+					   1);
+	}
+	// TODO check format
+	return GDL_SUCCESS;
+}
+
+
+static int
+help (void)
+{
+   print_header (PROGRAM);
+   printf ("\n");
+   printf ("--help\tDisplay a brief help on program usage\n");
+   printf ("--verbose\tOutput message on standard output to see what the program is doing\n");
+   printf ("\n");
+   printf ("--lca-prepare\tPrepare structure for fast and linear time LCA retrieval");
+   printf ("\n");
+   printf ("--input or -i\tInput directory or configuration file\n");
+   printf ("--output or -o\tThe output taxonomy database locationn");
+   printf ("--format or -f\tThe input format (default is ncbi)\n");
+}
+
+int
+main (int argc, char *argv[])
+{
+  int status;
+
+  parse_argument (argc, argv);
+
+  if (help_flag)
+  {
+  	  exit (help());
+  }
+
+  status = check_argument ();
+
+  if (status == GDL_SUCCESS)
+  {
+	    gdl_runtime * runtime;
+            FILE * stream;
+            mgx_taxonomy * taxonomy=0;
+
+	    runtime = runtime_setup ();
+
+            if (!strcmp(FORMAT, "db")) {
+	       stream = gdl_fileopen (INPUT, "r");
+	       taxonomy = mgx_taxonomy_fread (stream);
+	       gdl_fileclose (INPUT, stream);
+            } else {
+	       const mgx_taxonomy_factory * T = mgx_taxonomy_factory_lookup (FORMAT);
+	       if (!T)
+	       {
+		   GDL_ERROR_VAL(gdl_string_sprintf("Unknown format %s", FORMAT), GDL_FAILURE, GDL_FAILURE);
+	       }
+	       taxonomy = (T->read)(INPUT);
+            }
+
+	    if (lca_prepare_flag)
+	    {
+	    	if (verbose_flag)
+	    	{
+	    		printf("--\nPrepare LCA\n--\n");
+	    		printf("Euler tour: wait...");
+	    		fflush(stdout);
+	    	}
+	    	mgx_taxonomy_euler_tour (taxonomy);
+	    	if (verbose_flag)
+	    	{
+	    		printf("\b\b\b\b\b\b\b[ OK ]\n");
+	    		printf("RMQ prepare: wait...");
+	    		fflush(stdout);
+	    	}
+	    	mgx_taxonomy_rmq_prepare (taxonomy);
+	    	if (verbose_flag)
+			{
+				printf("\b\b\b\b\b\b\b[ OK ]\n");
+				fflush(stdout);
+			}
+	    }
+
+	    stream = gdl_fileopen (OUTPUT, "w");
+	    mgx_taxonomy_fwrite (stream, taxonomy);
+	    gdl_fileclose (OUTPUT, stream);
+
+	    // Save the runtime
+	    runtime_setdown (runtime);
+  }
+
+  exit (0);
+}
+

@@ -1,0 +1,251 @@
+/*
+ *  mgx-taxo2gis.c
+ *
+ *  $Author: mahep $, $Date: 2011/09/20 16:03:41 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+#include <ctype.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_io.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_seq_io.h>
+#include <gdl/gdl_list.h>
+
+#include "mixgenomix.h"
+#include "gzutil.h"
+#include "taxo.h"
+
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-taxo2dot";
+
+static int help_flag    = 0;
+static int verbose_flag = 0;
+static int no_missing_flag = 0;
+static int plasmid_flag = 0;
+
+static gdl_string * TAXODB   = NULL;
+static gdl_string * OUTPUT   = NULL;
+static gdl_string * GIS   = NULL;
+
+static struct option long_options[] =
+ {
+   /* These options set a flag. */
+   {"help", no_argument,          &help_flag, 1},
+   {"verbose", no_argument,       &verbose_flag, 1},
+   {"brief",   no_argument,       &verbose_flag, 0},
+   {"no-missing",   no_argument,       &no_missing_flag, 1},
+   {"plasmid",   no_argument,       &plasmid_flag, 1},
+ /* These options don't set a flag.
+      We distinguish them by their indices. */
+   {"output",   required_argument, 0, 'o'},
+   {"taxo",   required_argument, 0, 't'},
+   {"gis",   required_argument, 0, 'g'},
+   {0, 0, 0, 0}
+ };
+
+static int
+parse_argument (int argc, char *argv[])
+{
+	int c;
+
+   while (1)
+     {
+
+       /* getopt_long stores the option index here. */
+       int option_index = 0;
+
+       c = getopt_long (argc, argv, "o:t:g:",
+                        long_options, &option_index);
+
+       /* Detect the end of the options. */
+       if (c == -1)
+         break;
+
+       switch (c)
+         {
+         case 0:
+           /* If this option set a flag, do nothing else now. */
+           if (long_options[option_index].flag != 0)
+             break;
+           printf ("option %s", long_options[option_index].name);
+           if (optarg)
+             printf (" with arg %s", optarg);
+           printf ("\n");
+           break;
+
+         case 'o':
+           OUTPUT = gdl_string_clone (optarg);
+           break;
+         case 't':
+           TAXODB = gdl_string_clone (optarg);
+           break;
+         case 'g':
+		   GIS = gdl_string_clone (optarg);
+		   break;
+		 case '?':
+           GDL_ERROR_VAL ("Unknown arguments", GDL_EINVAL, -1);
+         default:
+           GDL_ERROR_VAL ("Bad arguments", GDL_EINVAL, -1);
+         }
+     }
+}
+
+static int
+check_argument (void)
+{
+	if (TAXODB == 0)
+	{
+		GDL_ERROR_VAL ("No taxonomy  specified",
+					   GDL_FAILURE,
+					   1);
+	}
+	if (GIS == 0)
+	{
+		GDL_ERROR_VAL ("No list of GIs provided",
+					   GDL_FAILURE,
+					   1);
+	}
+	if (OUTPUT == 0)
+	{
+		GDL_ERROR_VAL ("No output file provided",
+					   GDL_FAILURE,
+					   1);
+	}
+	return GDL_SUCCESS;
+}
+
+
+static int
+help (void)
+{
+   print_header (PROGRAM);
+   printf ("\n");
+   printf ("--help\tDisplay a brief help on program usage\n");
+   printf ("--verbose\tOutput message on standard output to see what the program is doing\n");
+   printf ("\n");
+   printf ("--taxo or -t\tThe input taxonomy file (taxo-db format)");
+   printf ("--gi or -g\tThe list of gis available (e.g., extracted from bioseq) ");
+   printf ("--output or -0\tOutput file\n");
+   printf ("--plasmid Flag specifying to include the plasmids (default : not included)\n");
+}
+
+
+
+int
+main (int argc, char *argv[])
+{
+  int status;
+
+  parse_argument (argc, argv);
+
+  if (help_flag)
+  {
+  	  exit (help());
+  }
+
+  status = check_argument ();
+
+  if (status == GDL_SUCCESS)
+  {
+		mgx_taxonomy * taxonomy, * taxonomy_sample;
+        FILE * stream, * stream_out;
+        size_t i, n, ntok, cptr;
+    	gdl_string    * line = 0;
+        gdl_list      * present_taxids;
+        gdl_string ** toks;
+
+        // read taxonomy
+	    stream   = gdl_fileopen (TAXODB, "r");
+	    taxonomy = mgx_taxonomy_fread (stream);
+	    gdl_fileclose (TAXODB, stream);
+
+	    if(verbose_flag){
+	    	printf("\nTaxonomy succesfully read, summary : \n");
+			printf("\t-number of nodes = %d\n", taxonomy->ntaxon);
+			printf("\t-maximum depth = %d\n", taxonomy->maxdepth);
+			printf("\t-root node ID = %s\n", taxonomy->root->names[0]);
+	    }
+
+
+	    // create a list containing the taxids represented in the taxonomy
+    	present_taxids  = gdl_list_alloc (gdl_list_default);
+	    for(i = 0 ; i < taxonomy->ntaxon; i++){
+			//gdl_list_append (present_taxids, taxonomy->taxons[i]->id, 0);
+                        gdl_list_push_back (present_taxids, taxonomy->taxons[i]->id, 0);
+	    }
+	    if(verbose_flag){
+	    	printf("\nList of taxids available created : size = %d\n", gdl_list_size(present_taxids));
+	    }
+
+	    // open input file
+    	stream = gdl_fileopen (GIS, "r");
+    	// open output file
+    	stream_out = gdl_fileopen (OUTPUT, "w");
+    	// read header
+    	gdl_getline (&line, &n, stream);
+    	// write header in output file
+		fprintf(stream_out,"%s\n",line);
+    	// process each line
+    	cptr = 0;
+    	while(gdl_getline (&line, &n, stream)!=-1)
+    	{
+    		// extract fields
+    		ntok = 0;
+    		toks = gdl_string_split(line, ",", &ntok);
+				//printf("number of tokens = %d\n", ntok);
+				//for(i=0;i<ntok;i++){
+				//	printf("token no %d = %s\n", i, toks[i]);
+				//}
+			// extract gi and sequence type
+    		if( strcmp(toks[3],"chromosome") == 0 | plasmid_flag) {
+    			// check if taxid is found in list to consider
+    			if(gdl_list_search(present_taxids, atol(toks[4])) != NULL){
+    				fprintf(stream_out,"%s\n",line);
+    				cptr++;
+    			}
+    		}
+    		// free tokens
+    		for(i = 0; i < ntok; i++){
+    			gdl_string_free(toks[i]);
+    		}
+    		GDL_FREE(toks);
+    		// free line
+    		gdl_string_free (line);
+    		line=0;
+    	}
+    	// close files
+		gdl_fileclose (GIS, stream);
+		gdl_fileclose (OUTPUT, stream_out);
+		// free list of taxids
+		gdl_list_free(present_taxids);
+		// check some gis were found
+		if(cptr==0){
+			printf("\nWARNING : no matching GIs were found !\n");
+		}else{
+			if(verbose_flag){
+				printf("\nExiting : %d matching GIs were found.\n", cptr);
+			}
+		}
+  }
+
+  exit (0);
+}
+

@@ -1,0 +1,263 @@
+K 25
+svn:wc:ra_dav:version-url
+V 39
+/svn/mixgenomix/!svn/ver/1120/trunk/seq
+END
+fasta.c
+K 25
+svn:wc:ra_dav:version-url
+V 46
+/svn/mixgenomix/!svn/ver/432/trunk/seq/fasta.c
+END
+kmer.c
+K 25
+svn:wc:ra_dav:version-url
+V 45
+/svn/mixgenomix/!svn/ver/432/trunk/seq/kmer.c
+END
+mgx-seq-kmernbfit.c
+K 25
+svn:wc:ra_dav:version-url
+V 58
+/svn/mixgenomix/!svn/ver/432/trunk/seq/mgx-seq-kmernbfit.c
+END
+mgx-seq-epsvw2taxons.c
+K 25
+svn:wc:ra_dav:version-url
+V 61
+/svn/mixgenomix/!svn/ver/760/trunk/seq/mgx-seq-epsvw2taxons.c
+END
+fasta.h
+K 25
+svn:wc:ra_dav:version-url
+V 46
+/svn/mixgenomix/!svn/ver/432/trunk/seq/fasta.h
+END
+kmer.h
+K 25
+svn:wc:ra_dav:version-url
+V 45
+/svn/mixgenomix/!svn/ver/432/trunk/seq/kmer.h
+END
+mgx-seq-fa2vw.c
+K 25
+svn:wc:ra_dav:version-url
+V 54
+/svn/mixgenomix/!svn/ver/967/trunk/seq/mgx-seq-fa2vw.c
+END
+mgx-seq-faget.c
+K 25
+svn:wc:ra_dav:version-url
+V 54
+/svn/mixgenomix/!svn/ver/691/trunk/seq/mgx-seq-faget.c
+END
+mgx-seq-epsNB2taxons.c
+K 25
+svn:wc:ra_dav:version-url
+V 61
+/svn/mixgenomix/!svn/ver/835/trunk/seq/mgx-seq-epsNB2taxons.c
+END
+mgx-seq-bams2pos.c
+K 25
+svn:wc:ra_dav:version-url
+V 57
+/svn/mixgenomix/!svn/ver/454/trunk/seq/mgx-seq-bams2pos.c
+END
+bloom.c
+K 25
+svn:wc:ra_dav:version-url
+V 46
+/svn/mixgenomix/!svn/ver/432/trunk/seq/bloom.c
+END
+mgx-seq-fqboot.c
+K 25
+svn:wc:ra_dav:version-url
+V 55
+/svn/mixgenomix/!svn/ver/795/trunk/seq/mgx-seq-fqboot.c
+END
+mgx-seq-bamgetread.c
+K 25
+svn:wc:ra_dav:version-url
+V 59
+/svn/mixgenomix/!svn/ver/622/trunk/seq/mgx-seq-bamgetread.c
+END
+bloom.h
+K 25
+svn:wc:ra_dav:version-url
+V 46
+/svn/mixgenomix/!svn/ver/432/trunk/seq/bloom.h
+END
+mgx-seq-favar.c
+K 25
+svn:wc:ra_dav:version-url
+V 54
+/svn/mixgenomix/!svn/ver/432/trunk/seq/mgx-seq-favar.c
+END
+mgx-seq-bam2Stats.c
+K 25
+svn:wc:ra_dav:version-url
+V 58
+/svn/mixgenomix/!svn/ver/899/trunk/seq/mgx-seq-bam2Stats.c
+END
+mgx-seq-bam2refqc.c
+K 25
+svn:wc:ra_dav:version-url
+V 59
+/svn/mixgenomix/!svn/ver/1119/trunk/seq/mgx-seq-bam2refqc.c
+END
+mgx-seq-fqtrim.c
+K 25
+svn:wc:ra_dav:version-url
+V 55
+/svn/mixgenomix/!svn/ver/533/trunk/seq/mgx-seq-fqtrim.c
+END
+mgx-seq-kmerdbdesc.c
+K 25
+svn:wc:ra_dav:version-url
+V 59
+/svn/mixgenomix/!svn/ver/432/trunk/seq/mgx-seq-kmerdbdesc.c
+END
+mgx-seq-kmerdb.c
+K 25
+svn:wc:ra_dav:version-url
+V 55
+/svn/mixgenomix/!svn/ver/432/trunk/seq/mgx-seq-kmerdb.c
+END
+mgx-seq-fqget.c
+K 25
+svn:wc:ra_dav:version-url
+V 54
+/svn/mixgenomix/!svn/ver/432/trunk/seq/mgx-seq-fqget.c
+END
+Makefile.am_CLUSTER
+K 25
+svn:wc:ra_dav:version-url
+V 58
+/svn/mixgenomix/!svn/ver/946/trunk/seq/Makefile.am_CLUSTER
+END
+mgx-seq-baminfo.c
+K 25
+svn:wc:ra_dav:version-url
+V 57
+/svn/mixgenomix/!svn/ver/1118/trunk/seq/mgx-seq-baminfo.c
+END
+mgx-seq-famut.c
+K 25
+svn:wc:ra_dav:version-url
+V 55
+/svn/mixgenomix/!svn/ver/1029/trunk/seq/mgx-seq-famut.c
+END
+mgx-seq-uniprotid.c
+K 25
+svn:wc:ra_dav:version-url
+V 59
+/svn/mixgenomix/!svn/ver/1120/trunk/seq/mgx-seq-uniprotid.c
+END
+mgx-seq-bams2bh.c
+K 25
+svn:wc:ra_dav:version-url
+V 57
+/svn/mixgenomix/!svn/ver/1052/trunk/seq/mgx-seq-bams2bh.c
+END
+mgx-seq-fqsim.c
+K 25
+svn:wc:ra_dav:version-url
+V 55
+/svn/mixgenomix/!svn/ver/1052/trunk/seq/mgx-seq-fqsim.c
+END
+mgx-seq-bwabh.c
+K 25
+svn:wc:ra_dav:version-url
+V 54
+/svn/mixgenomix/!svn/ver/432/trunk/seq/mgx-seq-bwabh.c
+END
+mgx-seq-fadesc.c
+K 25
+svn:wc:ra_dav:version-url
+V 55
+/svn/mixgenomix/!svn/ver/432/trunk/seq/mgx-seq-fadesc.c
+END
+mgx-seq-fa2libsvm.c
+K 25
+svn:wc:ra_dav:version-url
+V 58
+/svn/mixgenomix/!svn/ver/724/trunk/seq/mgx-seq-fa2libsvm.c
+END
+mgx-seq-kmertab.c
+K 25
+svn:wc:ra_dav:version-url
+V 56
+/svn/mixgenomix/!svn/ver/432/trunk/seq/mgx-seq-kmertab.c
+END
+mgx-seq-kmernbpred.c
+K 25
+svn:wc:ra_dav:version-url
+V 59
+/svn/mixgenomix/!svn/ver/724/trunk/seq/mgx-seq-kmernbpred.c
+END
+mgx-seq-bam2var.c
+K 25
+svn:wc:ra_dav:version-url
+V 56
+/svn/mixgenomix/!svn/ver/873/trunk/seq/mgx-seq-bam2var.c
+END
+mgx-seq-drawfrag.c
+K 25
+svn:wc:ra_dav:version-url
+V 57
+/svn/mixgenomix/!svn/ver/960/trunk/seq/mgx-seq-drawfrag.c
+END
+mgx-seq-bfdb.c
+K 25
+svn:wc:ra_dav:version-url
+V 53
+/svn/mixgenomix/!svn/ver/432/trunk/seq/mgx-seq-bfdb.c
+END
+mgx-seq-fq2fa.c
+K 25
+svn:wc:ra_dav:version-url
+V 54
+/svn/mixgenomix/!svn/ver/720/trunk/seq/mgx-seq-fq2fa.c
+END
+mgx-seq-fa2fq.c
+K 25
+svn:wc:ra_dav:version-url
+V 54
+/svn/mixgenomix/!svn/ver/587/trunk/seq/mgx-seq-fa2fq.c
+END
+mgx-seq-fasplit.c
+K 25
+svn:wc:ra_dav:version-url
+V 56
+/svn/mixgenomix/!svn/ver/432/trunk/seq/mgx-seq-fasplit.c
+END
+mgx-seq-fqdesc.c
+K 25
+svn:wc:ra_dav:version-url
+V 55
+/svn/mixgenomix/!svn/ver/432/trunk/seq/mgx-seq-fqdesc.c
+END
+Makefile.am
+K 25
+svn:wc:ra_dav:version-url
+V 51
+/svn/mixgenomix/!svn/ver/1052/trunk/seq/Makefile.am
+END
+mgx-seq-fqmv.c
+K 25
+svn:wc:ra_dav:version-url
+V 54
+/svn/mixgenomix/!svn/ver/1053/trunk/seq/mgx-seq-fqmv.c
+END
+mgx-seq-famergpair.c
+K 25
+svn:wc:ra_dav:version-url
+V 59
+/svn/mixgenomix/!svn/ver/973/trunk/seq/mgx-seq-famergpair.c
+END
+mgx-seq-bfclass.c
+K 25
+svn:wc:ra_dav:version-url
+V 56
+/svn/mixgenomix/!svn/ver/432/trunk/seq/mgx-seq-bfclass.c
+END

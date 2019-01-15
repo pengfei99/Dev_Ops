@@ -1,0 +1,979 @@
+/*
+ *  mgx-refmut.c
+ *
+ *  $Author: veyriejb $, $Date: 2012/03/15 17:27:03 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+ /**
+ * \file mgx-refmut.c
+ * \brief This program reads a bam file and report the per read mutations with respect to the reference 
+ * \author Jean-Baptiste Veyrieras
+ * \version 1.0
+ * \date November 1 2011
+ */
+
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_list.h>
+#include <gdl/gdl_hash.h>
+
+// mixgenomix headers
+#include <ext/bam/sam.h>
+#include <ext/bam/faidx.h>
+#include <utils/gzutil.h>
+
+#include "mixgenomix.h"
+
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-refmut";
+
+static int help_flag = 0;
+static int verbose_flag = 0;
+static int unpack_flag = 0;
+static int rm_clipbound_flag = 0;
+static int qual_output_flag = 0;
+
+static gdl_string * BAM_F = NULL;  // name of the input SAM file
+static gdl_string * FNA_F = NULL;  // name of the input fasta file for the reference
+static gdl_string * OUTPUT = NULL; // name of the file to save the hits (for bwa-sw only single hits with non-null mapping quality scores)
+static uint32_t MIN_QUALITY = 0; // minimum alignment quality (MAPQ field)
+static uint32_t BUFFER_SIZE = 100; // the size of the buffer
+
+static struct option long_options[] = {
+/* These options set a flag. */
+{ "help", no_argument, &help_flag, 1 },
+{ "verbose", no_argument, &verbose_flag, 1 },
+{ "brief", no_argument, &verbose_flag, 2 },
+{ "unpack", no_argument, &unpack_flag, 1 },
+{ "rm-clipbound", no_argument, &rm_clipbound_flag, 1 },
+{ "qual", no_argument, &qual_output_flag, 1 },
+/* These options don't set a flag.
+ We distinguish them by their indices. */
+{ "output", required_argument, 0, 'o' },
+{ "bam", required_argument, 0, 'b' },
+{ "fasta", required_argument, 0, 'f' },
+{ "bufsize", required_argument, 0, 's' },
+{ "mapqual", required_argument, 0, 'm' },
+{ 0, 0, 0, 0 } };
+
+static int parse_argument(int argc, char *argv[]) {
+	int c;
+	while (1) {
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+		c = getopt_long(argc, argv, "b:f:o:m:s:", long_options, &option_index);
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+		switch (c) {
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf("option %s", long_options[option_index].name);
+			if (optarg)
+				printf(" with arg %s", optarg);
+			printf("\n");
+			break;
+		case 'b':
+			BAM_F = gdl_string_clone(optarg);
+			break;
+		case 'f':
+			FNA_F = gdl_string_clone(optarg);
+			break;
+		case 'o':
+			OUTPUT = gdl_string_clone(optarg);
+			break;
+		case 'm':
+			MIN_QUALITY = (uint32_t)atol(optarg);
+			break;
+		case 's':
+			BUFFER_SIZE = (uint32_t)atol(optarg);
+			break;
+		case '?':
+			GDL_ERROR_VAL("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+/**
+ * \fn static int check_argument(void)
+ * \brief This function checks the main function arguments.
+ * \return a success indicator
+ */
+static int check_argument(void) {
+	if (BAM_F == 0) {
+		GDL_ERROR_VAL("No bam file provided", GDL_FAILURE, 1);
+	}
+	if (FNA_F == 0) {
+		GDL_ERROR_VAL("No fasta file provided", GDL_FAILURE, 1);
+	}
+	if (OUTPUT == 0) {
+		GDL_ERROR_VAL("No output file provided", GDL_FAILURE, 1);
+	}
+	return GDL_SUCCESS;
+}
+
+/**
+ * \fn static int help(void)
+ * \brief This function prints the help
+ */
+static int help(void) {
+	print_header(PROGRAM);
+	printf("\n");
+	printf("--help\tDisplay a brief help on program usage\n");
+	printf("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf("\n");
+	printf("--unpack\tTells the program to output all genomic coordinates (not sparse format)\n");
+	printf("--rm-clipbound\tTells the program to ignore reads clipped at each reference sequence boundaries\n");
+	printf("--qual\tOutput the average quality for each substitution\n");
+	printf("\n");
+	printf("--bam or -b\tA sam or a bam file\n");
+	printf("--fasta or -f\tThe reference fasta file\n");
+	printf("--output or -o\tThe output file\n");
+	printf("--bufsize or -s\tThe size of the variant buffer: must be > to the longest alignment\n");
+	printf("--mapqual or -m\tThe lower value for the mapping quality (reads with mapping quality below are discared)\n");
+}
+
+// 0=A,1=T,2=C,3=G,4=N
+static const char BASES[5] = {'A','T','C','G','N'};
+
+typedef struct
+{
+   uint32_t ref_base;
+   uint32_t base_counts[5];
+   uint32_t base_qual[5];
+} snp_buffer;
+
+void
+snp_buffer_free (snp_buffer * b)
+{
+   if (b)
+   {
+      GDL_FREE (b);
+   }
+}
+
+typedef struct
+{
+  uint32_t nallele;
+  char     ** alleles;
+  uint32_t * allele_counts;  
+} indel_buffer;
+
+void
+indel_buffer_free (indel_buffer * b)
+{
+   if (b)
+   {
+      GDL_MATRIX_FREE (b->alleles, b->nallele);
+      GDL_FREE (b->allele_counts); 
+      GDL_FREE (b);
+   }
+}
+
+void
+indel_buffer_add (indel_buffer * b, char * allele)
+{
+      uint32_t j;
+
+      for(j = 0; j < b->nallele; j++)
+      {
+          if (!strcmp(b->alleles[j], allele))
+          {
+             break;           
+          }
+      }
+      if (j < b->nallele)
+      {
+         b->allele_counts[j]++;
+      }
+      else 
+      {
+          char ** ctmp = GDL_MALLOC (char *, b->nallele+1);
+          memcpy(ctmp, b->alleles, sizeof(char *)*(b->nallele));
+          GDL_FREE (b->alleles);
+          b->alleles = ctmp;
+          uint32_t * itmp =  GDL_MALLOC (uint32_t, b->nallele+1); 
+          memcpy(itmp, b->allele_counts, sizeof(uint32_t)*(b->nallele));
+          GDL_FREE (b->allele_counts);
+          b->allele_counts = itmp;
+          b->alleles[b->nallele]       = gdl_string_clone (allele);
+          b->allele_counts[b->nallele] = 1;
+          (b->nallele)++;
+      }
+}
+
+typedef struct
+{
+   FILE * stream;
+   char * ref_name;
+   uint32_t start_position;
+   uint32_t size;
+   uint32_t mem_size;
+   uint32_t   * depths;
+   snp_buffer   ** snps;  
+   indel_buffer ** insertions;
+   indel_buffer ** deletions;
+} variant_buffer;
+
+variant_buffer * 
+variant_buffer_alloc(const char * filename, const char * ref_name, const uint32_t start_position, uint32_t size)
+{
+   variant_buffer * b;
+
+   b = GDL_CALLOC (variant_buffer, 1);
+
+   b->stream         = gdl_fileopen (filename, "w");
+   b->ref_name       = gdl_string_clone (ref_name);
+   b->start_position = start_position;
+   b->size           = size;
+   b->mem_size       = size;
+   b->depths         = GDL_CALLOC (uint32_t, size);
+   b->snps           = GDL_CALLOC(snp_buffer *, size);
+   b->insertions     = GDL_CALLOC(indel_buffer *, size);
+   b->deletions      = GDL_CALLOC(indel_buffer *, size);
+
+   if (qual_output_flag)
+      fprintf (b->stream, "landmark\tposition\treference\tcoverage\tinsertion\tdeletion\tsubstitution\tsubsititution_quality\n");
+   else
+      fprintf (b->stream, "landmark\tposition\treference\tcoverage\tinsertion\tdeletion\tsubstitution\n");
+      
+   fflush(b->stream);   
+
+   return b;
+}
+
+void
+variant_buffer_realloc (variant_buffer * b, const char * ref_name, const uint32_t start_position, uint32_t size)
+{
+   b->ref_name       = gdl_string_clone (ref_name);
+   b->start_position = start_position;
+   b->size           = size;
+   b->mem_size       = size;
+   GDL_FREE (b->depths);
+   b->depths         = GDL_CALLOC (uint32_t, size);
+   GDL_FREE (b->snps);
+   b->snps           = GDL_CALLOC(snp_buffer *, size);
+   GDL_FREE (b->insertions);
+   b->insertions     = GDL_CALLOC(indel_buffer *, size);
+   GDL_FREE (b->deletions);
+   b->deletions      = GDL_CALLOC(indel_buffer *, size);
+}
+
+void
+variant_buffer_free (variant_buffer * b)
+{
+   if (b)
+   {
+       fclose (b->stream);
+       GDL_FREE (b);
+   }
+}
+
+void
+variant_buffer_release (variant_buffer * b, uint32_t align_ref_start, uint32_t align_ref_end, faidx_t * fastidx, const int resize)
+{
+   int reflen;
+   uint32_t i, j, k, n;
+
+   if (align_ref_start > b->start_position+b->size-1)
+   {
+      n = b->size;
+   } else {
+      n = align_ref_start - b->start_position;
+   }
+
+//printf("[variant_buffer_release] buffer->start_position=%ld align_ref_start=%ld n=%ld\n",  b->start_position, align_ref_start, n);
+   
+// get the corresponding ref seq
+   char * refseq = faidx_fetch_seq(fastidx, b->ref_name, b->start_position, b->start_position+n, &reflen);
+   for(i = 0; i < n; i++)
+   {
+       if (((!b->insertions[i] && !b->deletions[i]) && !b->snps[i]) && !unpack_flag)
+       {
+          continue;
+       }
+       fprintf (b->stream, "%s", b->ref_name);
+       fprintf (b->stream, "\t%ld", b->start_position + i);
+       fprintf (b->stream, "\t%c", refseq[i]);
+       fprintf (b->stream, "\t%ld", b->depths[i]);
+       if (b->insertions[i])
+       {
+            fprintf (b->stream, "\t");
+            for(j = 0; j < b->insertions[i]->nallele; j++) 
+            {
+                fprintf (b->stream, "%s=%ld;", b->insertions[i]->alleles[j], b->insertions[i]->allele_counts[j]);
+            }
+       } else {
+          fprintf (b->stream, "\t.");
+       }
+       if (b->deletions[i])
+       {
+            fprintf (b->stream, "\t");
+            for(j = 0; j < b->deletions[i]->nallele; j++) 
+            {
+                fprintf (b->stream, "%s=%ld;", b->deletions[i]->alleles[j], b->deletions[i]->allele_counts[j]);
+            }
+       } else {
+          fprintf (b->stream, "\t.");
+       }
+       if (b->snps[i])
+       {
+            fprintf (b->stream, "\t");
+            for(j = 0; j < 5; j++)
+            {
+               if (b->snps[i]->base_counts[j] && j != b->snps[i]->ref_base)
+               {
+                   fprintf (b->stream, "%c=%ld;", BASES[j], b->snps[i]->base_counts[j]);
+               }
+            }
+       } else {
+          fprintf (b->stream, "\t.");
+       }
+       if (b->snps[i] && qual_output_flag)
+       {
+            fprintf (b->stream, "\t");
+            for(j = 0; j < 5; j++)
+            {
+               if (b->snps[i]->base_counts[j] && j!=b->snps[i]->ref_base)
+               {
+                   fprintf (b->stream, "%c=%2.2f;", BASES[j], ((double)b->snps[i]->base_qual[j])/b->snps[i]->base_counts[j]);
+               }
+            }
+       } else if (qual_output_flag) {
+          fprintf (b->stream, "\t.");
+       }
+       fprintf (b->stream, "\n");
+   }
+   GDL_FREE (refseq);
+   if (unpack_flag)
+   {
+      char * refseq = faidx_fetch_seq(fastidx, b->ref_name, b->start_position + b->size, align_ref_start-1, &reflen);
+      for(i = b->start_position + b->size; i < align_ref_start; i++)
+      {
+           fprintf (b->stream, "%s", b->ref_name);
+           fprintf (b->stream, "\t%ld", i);
+           fprintf (b->stream, "\t%c", refseq[i]);
+           fprintf (b->stream, "\t%ld", 0);
+           fprintf (b->stream, "\t.\t.\t.\n");
+      }
+      fflush(b->stream);
+   }
+   // move to the left and resize the buffer if required
+//printf("[variant_buffer_release] Move %ld (included) to %ld to the left of the buffer\n", n,  b->size);
+   if (n < b->size) {
+      for(i = n; i < b->size; i++) 
+      {
+	  b->depths[i-n] = b->depths[i];
+	  b->depths[i] = 0;
+	  snp_buffer_free (b->snps[i-n]);
+	  b->snps[i-n] = b->snps[i];
+	  b->snps[i] = 0;
+	  indel_buffer_free (b->insertions[i-n]);
+	  b->insertions[i-n] = b->insertions[i];
+	  b->insertions[i] = 0;
+	  indel_buffer_free (b->deletions[i-n]);
+	  b->deletions[i-n] = b->deletions[i];
+	  b->deletions[i] = 0;
+      }
+      for(i = b->size-n-1; i < n; i++) {
+         b->depths[i] = 0;
+         snp_buffer_free (b->snps[i]);
+         b->snps[i] = 0;
+         indel_buffer_free (b->insertions[i]);
+         b->insertions[i] = 0;
+         indel_buffer_free (b->deletions[i]);
+         b->deletions[i] = 0;
+      }
+   } else {
+      for(i = 0; i < n; i++) 
+      {
+	  b->depths[i] = 0;
+	  snp_buffer_free (b->snps[i]);
+	  b->snps[i] = 0;
+	  indel_buffer_free (b->insertions[i]);
+	  b->insertions[i] = 0;
+	  indel_buffer_free (b->deletions[i]);
+	  b->deletions[i] = 0;
+      }
+   }
+   b->start_position += n;  
+   if (resize)
+   {
+      uint32_t new_size = align_ref_end - align_ref_start + 1;
+   //printf("[variant_buffer_release] new size = %ld > current size %ld (mem = %ld)?", align_ref_end - align_ref_start + 1, b->size, b->mem_size);
+      if (new_size > b->mem_size)  
+      {
+	 GDL_ERROR_VOID ("Need a bigger buffer !!!", GDL_FAILURE);
+      }
+      else if (new_size > b->size)
+      {
+	 for(i = b->size; i < new_size; i++)
+	 {
+	      b->depths[i] = 0;
+	      snp_buffer_free (b->snps[i]);
+	      b->snps[i] = 0;
+	      indel_buffer_free (b->insertions[i]);
+	      b->insertions[i] = 0;
+	      indel_buffer_free (b->deletions[i]);
+	      b->deletions[i] = 0;
+	 }
+	 b->size = new_size;
+	 //printf("[variant_buffer_release] new size = %ld", b->size);
+      }
+      b->start_position = align_ref_start;  
+   }
+} 
+
+void 
+variant_buffer_new_read (variant_buffer * b, uint32_t align_ref_start,  uint32_t * cigar, uint32_t n_cigar,  faidx_t * fastidx)
+{
+   uint32_t j, k, l, align_ref_end;
+
+    l = align_ref_start;
+    for(k = 0; k < n_cigar; ++k)
+    {
+	int cop = cigar[k] & BAM_CIGAR_MASK; // operation
+	int cl  = cigar[k] >> BAM_CIGAR_SHIFT; // length
+	switch(cop)
+	{
+	  case BAM_CMATCH:
+	  case BAM_CREF_SKIP:
+	  case BAM_CPAD:
+	  case BAM_CDEL:
+          default:
+               l += cl;
+	       break;
+	  case BAM_CSOFT_CLIP:
+	  case BAM_CHARD_CLIP:
+               break;
+      }
+   }
+   align_ref_end = l;
+   //printf("[buffer_new_read] start=%ld end=%ld\n", align_ref_start, align_ref_end);
+   if (align_ref_start > b->start_position)
+   {
+      // output left-side of the buffer
+      variant_buffer_release (b, align_ref_start, align_ref_end, fastidx, 1);
+   }
+   l = align_ref_start;
+   for(k = 0; k < n_cigar; ++k)
+    {
+	int cop = cigar[k] & BAM_CIGAR_MASK; // operation
+	int cl  = cigar[k] >> BAM_CIGAR_SHIFT; // length
+	switch(cop)
+	{
+	  case BAM_CMATCH:
+	  case BAM_CREF_SKIP:
+	  case BAM_CPAD:
+	  case BAM_CDEL: // we count deletion here as "coverage" so that indel+substitution mutation frequency will sum to one
+	  default:
+	       // M match
+	       // N ambiguous reference
+	       // P = padding
+	       // other stuff
+               for(j = 0; j < cl; j++, l++) 
+               {
+                  b->depths[l-b->start_position]++;
+               }
+	       break;
+	  case BAM_CSOFT_CLIP:
+	  case BAM_CHARD_CLIP:
+	       // S = soft clip
+	       // H = hard clip
+	       break;
+      }
+   }
+}
+
+void
+variant_buffer_push_snp (variant_buffer * b, uint32_t position, char ref_base, char obs_base, uint8_t qual_base)
+{
+   if (position < b->start_position)
+   {
+      GDL_ERROR_VOID (gdl_string_sprintf ("Position %ld is < to buffer starting position %ld\n", position, b->start_position), GDL_FAILURE);
+   }
+   if (position > b->start_position+b->size-1)
+   {
+      GDL_ERROR_VOID (gdl_string_sprintf ("Position %ld is < to buffer ending position %ld\n", position, b->start_position+b->size-1), GDL_FAILURE);
+   }
+   if (ref_base==obs_base) {
+      GDL_ERROR_VOID (gdl_string_sprintf ("Position %ld is not a SNP (ref=%c,read=%c)\n", position, ref_base, obs_base), GDL_FAILURE);
+   }
+   uint32_t i = position - b->start_position;
+   //printf("[variant_buffer_push_snp] position=%ld ref=%c obs=%c\n", position, ref_base, obs_base);
+
+   if (!b->snps[i]) // initiate the buffer
+   {
+       b->snps[i] = GDL_CALLOC (snp_buffer, 1);
+       switch(ref_base)
+       {
+          case 'A':
+             b->snps[i]->ref_base=0;
+             break;
+          case 'T':
+             b->snps[i]->ref_base=1;
+             break;
+          case 'C':
+             b->snps[i]->ref_base=2;
+             break;
+          case 'G':
+             b->snps[i]->ref_base=3;
+             break;
+          case 'N':
+             b->snps[i]->ref_base=4;
+             break;
+          default:
+  	     b->snps[i]->ref_base=4;
+             //GDL_ERROR_VOID (gdl_string_sprintf ("Invalid reference allele %c\n", ref_base), GDL_FAILURE);
+             break;
+       }
+   }
+   switch(obs_base)
+   {
+       case 'A':
+          b->snps[i]->base_qual[0]+=qual_base;
+	  b->snps[i]->base_counts[0]++;
+	  break;
+       case 'T':
+          b->snps[i]->base_qual[1]+=qual_base;
+	  b->snps[i]->base_counts[1]++;
+	  break;
+       case 'C':
+          b->snps[i]->base_qual[2]+=qual_base;
+	  b->snps[i]->base_counts[2]++;
+	  break;
+       case 'G':
+          b->snps[i]->base_qual[3]+=qual_base;
+	  b->snps[i]->base_counts[3]++;
+	  break;
+       case 'N':
+          b->snps[i]->base_qual[4]+=qual_base;
+	  b->snps[i]->base_counts[4]++;
+	  break;
+       default:
+	  GDL_ERROR_VOID (gdl_string_sprintf ("Invalid observed allele %c\n", obs_base), GDL_FAILURE);
+	  break;
+   }
+}
+
+void
+variant_buffer_push_insertion (variant_buffer * b, uint32_t position, char * allele)
+{
+   if (position < b->start_position)
+   {
+      GDL_ERROR_VOID (gdl_string_sprintf ("Position %ld is < to buffer starting position %ld\n", position, b->start_position), GDL_FAILURE);
+   }
+   if (position > b->start_position+b->size-1)
+   {
+      GDL_ERROR_VOID (gdl_string_sprintf ("Position %ld is < to buffer ending position %ld\n", position, b->start_position+b->size-1), GDL_FAILURE);
+   }
+   uint32_t i = position - b->start_position;
+//printf("[variant_buffer_push_insertion] position=%ld index=%ld allele=%s\n", position, i, allele);
+   if (!b->insertions[i]) // initiate the buffer
+   {
+       b->insertions[i] = GDL_CALLOC (indel_buffer, 1);
+       b->insertions[i]->nallele       = 1;
+       b->insertions[i]->alleles       = GDL_MALLOC (char *, 1);
+       b->insertions[i]->alleles[0]    = gdl_string_clone (allele);
+       b->insertions[i]->allele_counts = GDL_MALLOC (uint32_t, 1);
+       b->insertions[i]->allele_counts[0] = 1;
+   } else {
+      indel_buffer_add (b->insertions[i], allele);
+   }
+}
+
+void
+variant_buffer_push_deletion (variant_buffer * b, uint32_t position, char * allele)
+{
+   if (position < b->start_position)
+   {
+      GDL_ERROR_VOID (gdl_string_sprintf ("Position %ld is < to buffer starting position %ld\n", position, b->start_position), GDL_FAILURE);
+   }
+   if (position > b->start_position+b->size-1)
+   {
+      GDL_ERROR_VOID (gdl_string_sprintf ("Position %ld is < to buffer ending position %ld\n", position, b->start_position+b->size-1), GDL_FAILURE);
+   }
+   uint32_t i = position - b->start_position;
+//printf("[variant_buffer_push_deletion] position=%ld index=%ld allele=%s\n", position, i, allele);
+   if (!b->deletions[i]) // initiate the buffer
+   {
+       b->deletions[i] = GDL_CALLOC (indel_buffer, 1);
+       b->deletions[i]->nallele       = 1;
+       b->deletions[i]->alleles       = GDL_MALLOC (char *, 1);
+       b->deletions[i]->alleles[0]    = gdl_string_clone (allele);
+       b->deletions[i]->allele_counts = GDL_MALLOC (uint32_t, 1);
+       b->deletions[i]->allele_counts[0] = 1;
+   } else {
+      indel_buffer_add (b->deletions[i], allele);
+   }
+}
+
+static char *
+bam_get_qery_sequence (bam1_t * bamAlign)
+{
+   int32_t k;
+   int32_t qlen = (bamAlign->core).l_qseq;
+   char * qseq  = GDL_MALLOC (char, qlen+1);
+   qseq[qlen]   = '\0';
+ 
+   for(k = 0; k < qlen; k++)
+   {
+      char qbase = bam1_seqi(bam1_seq(bamAlign), k);
+      switch(qbase)
+      {
+         case 0x1:
+	    qseq[k] = 'A';
+	    break;
+	 case 0x2:
+	    qseq[k] = 'C';
+	    break;
+	 case 0x4:
+	    qseq[k] = 'G';
+	    break;
+	 case 0x8:
+	    qseq[k] = 'T';
+	    break;
+	 case 0x15:
+	 default:
+	    qseq[k] = 'N';
+	    break;
+      }
+   }
+   return qseq;
+}
+
+/*
+* Filter out reads which are mapped at both extremities of the reference
+* with hard/soft clipping outside the reference sequence
+*/
+static int
+remove_extreme_clipping (bam1_t * bamAlign, uint32_t * cigar, int32_t qpos, int32_t qlen, int32_t reflen)
+{
+   int left=-1;
+   int right=-1;
+   size_t k;
+
+      for(k = 0; k < bamAlign->core.n_cigar; ++k)
+      {
+	 int cop = cigar[k] & BAM_CIGAR_MASK; // operation
+	 int cl  = cigar[k] >> BAM_CIGAR_SHIFT; // length
+	 switch(cop)
+	 {
+	   case BAM_CSOFT_CLIP: 
+	   case BAM_CHARD_CLIP: 
+                if (!k) left=cl;
+                if (k==bamAlign->core.n_cigar) right=cl;
+		break;
+           default:
+                break;
+	}
+      }
+
+   if (left!=-1 && qpos==0) return 1;
+   if (right!=-1 && qpos+qlen+right>reflen) return 1;
+   
+   return 0;
+}
+
+int main(int argc, char *argv[]) {
+		int status;
+		parse_argument(argc, argv);
+		if (help_flag) {
+			exit(help());
+		}
+
+		status = check_argument();
+
+		if (status == GDL_SUCCESS) {
+                        int32_t i,j,k,l,qi;
+                        char * allele;
+			bam1_t * bamAlign = 0;
+                        faidx_t * fastidx = 0;
+
+                        // FASTA file
+                        fastidx = fai_load(FNA_F);
+                        if (verbose_flag)
+                        {
+                            fprintf(stdout, "[fai_open] %p\n", fastidx);
+                            fflush(stdout);
+                        }
+                        if (!fastidx)
+                        {
+                             fai_build(FNA_F);
+                             fastidx = fai_load(FNA_F);
+                             if (verbose_flag)
+                             {
+                                fprintf(stdout, "[fai_build] %p\n", fastidx);
+                                fflush(stdout);
+                             }
+                        }
+
+
+                        // BAM file
+			bamFile stream = bam_open(BAM_F, "r");
+			if (verbose_flag)
+			{
+			    fprintf(stdout, "[bam_open] %p\n", stream);
+			    fflush(stdout);
+			}
+                        bam_header_t * bamHeader = bam_header_read(stream);
+			if (verbose_flag)
+			{
+			    fprintf(stdout, "[bam_header] %p\n", bamHeader);
+			    fflush(stdout);
+			}
+                        // ref length
+                        uint32_t reflen = 0;
+                        // Alignment counter
+                        size_t ac = 0;
+			// Initialize the pointer to the first alignment
+			bamAlign = bam_init1();
+                        // Variant buffer 
+                        variant_buffer * varbuf = 0;
+			while (bam_read1(stream, bamAlign) >= 0) {
+                                // counter
+                                if ((ac && ac % 100000 == 0) && verbose_flag)
+                                { 
+                                    fprintf(stdout, "[bam_read] %ld alignements processed\n", ac);
+                                    fflush(stdout);
+                                }
+                                ac++;
+                                // the read is mapped
+                                int32_t is_mapped = ((bamAlign->core.flag&BAM_FUNMAP)==0);
+                                uint32_t qual = (bamAlign->core.qual);
+                                // reference name = bamHeader->target_name[(bamAlign->core).tid]
+                                // 0-based leftmost position
+                                int32_t qpos = (bamAlign->core).pos;
+                                if (!is_mapped || qual < MIN_QUALITY)
+                                {
+                                   if (verbose_flag) {
+                                      fprintf(stderr, "[discard alignment: low quality] %s\n", bam1_qname(bamAlign));
+                                      fflush(stderr);
+                                   }
+                                   continue;
+                                   bam_destroy1(bamAlign);
+				   bamAlign = bam_init1();
+                                }
+                                // ref name
+                                const char * ref_name = bamHeader->target_name[(bamAlign->core).tid];
+                                // query length
+                                int32_t qlen = (bamAlign->core).l_qseq;
+                                // query strand
+                                int32_t qstrand = bam1_strand(bamAlign);
+                                // get the sequence of the query (reverse complemented if aligned in reverse strand)
+                                char    * qseq  = bam_get_qery_sequence (bamAlign);
+                                // get the query sequence quality
+                                uint8_t * qqual = bam1_qual(bamAlign);
+                                // MD tag
+                                uint8_t * md_tag_aux = bam_aux_get(bamAlign, "MD");
+                                if (!md_tag_aux)
+                                {
+                                    GDL_ERROR_VAL("[error] No MD TAG found ! Please run 'samtools calmd' before\n", GDL_FAILURE, GDL_FAILURE);
+                                }
+                                char * md_tag = bam_aux2Z(md_tag_aux);
+                                // cigar 
+                                uint32_t * cigar = bam1_cigar(bamAlign);
+                                if (rm_clipbound_flag && remove_extreme_clipping (bamAlign, cigar, qpos, qlen, reflen))
+                                {
+if (qpos==0) fprintf(stdout, "[discard alignment: extreme clipping] %s\n", bam1_qname(bamAlign));
+                                   if (verbose_flag) {
+                                      fprintf(stderr, "[discard alignment: extreme clipping] %s\n", bam1_qname(bamAlign));
+                                      fflush(stderr);
+                                   }
+                                   continue;
+                                   bam_destroy1(bamAlign);
+				   bamAlign = bam_init1();
+                                }
+                                if (!varbuf || strcmp(varbuf->ref_name, ref_name))
+                                {
+                                   if (varbuf) {
+                                       variant_buffer_release (varbuf, reflen, reflen, fastidx, 0);
+                                       variant_buffer_realloc (varbuf, ref_name, qpos, BUFFER_SIZE);
+                                   } else {
+                                       varbuf = variant_buffer_alloc (OUTPUT, ref_name, qpos, BUFFER_SIZE);
+                                   }
+                                }
+                                reflen = bamHeader->target_len[(bamAlign->core).tid];
+//printf("New read %s\n", bam1_qname(bamAlign));
+                                variant_buffer_new_read (varbuf, qpos, cigar, bamAlign->core.n_cigar, fastidx);
+                                // parse cigar
+                                // i = (qstrand==0) ? 0 : qlen-1;
+                                long * align2rpos = GDL_CALLOC (long, qlen);
+                                long * align2qpos = GDL_CALLOC (long, qlen);
+                                for(j = 0; j < qlen; j++) align2rpos[j] = -1;
+                                i = qi = 0;
+                                l = qpos;
+			        for(k = 0; k < bamAlign->core.n_cigar; ++k)
+			        {
+				   int cop = cigar[k] & BAM_CIGAR_MASK; // operation
+				   int cl  = cigar[k] >> BAM_CIGAR_SHIFT; // length
+				   switch(cop)
+				   {
+				     case BAM_CMATCH: 
+				     case BAM_CREF_SKIP:
+				     case BAM_CPAD:
+				     default:
+                                          // M match
+                                          // N ambiguous reference
+                                          // P = padding
+                                          // other stuff
+//printf("M%d", cl);
+//printf("i=%ld l=%ld ==> %ld\n", i, l, align2rpos[i]);
+if (align2rpos[i]==-1) {
+   align2rpos[i]=l;
+}
+for(j = 0; j < cl; j++, qi++) 
+{
+  align2qpos[i+j]=qi;
+  if (j) {
+     align2rpos[i+j]=align2rpos[i+j-1]+1;
+  }
+}
+i += cl;
+l += cl;
+                                          break;
+				     case BAM_CINS:
+                                          // I insertion (w.r.t the reference)
+//printf("%ld inserted bases at position %ld ==> %ld\n", cl, i, (l) ? l-1 : l);
+   allele = gdl_string_alloc (cl);
+   strncpy(allele, qseq+qi, cl);
+   if (!qstrand) {
+      variant_buffer_push_insertion (varbuf, l, allele);
+   }
+   GDL_FREE (allele);
+qi += cl;
+//printf("I%d", cl);
+                                          break;
+				     case BAM_CDEL:
+                                          // D deletion (w.r.t the reference)
+l += cl;
+//printf("%d (D%d)\n", l, cl);
+                                          break;
+				     case BAM_CSOFT_CLIP: 
+				     case BAM_CHARD_CLIP: 
+                                          // S = soft clip
+                                          // H = hard clip
+//printf("S%d", cl);
+qi += cl;
+//i  += cl;
+//l  += cl;
+                                          break;
+				  }
+			        }
+                                // Parse the md tag
+                                gdl_string * tmp;
+				i=j=0;
+                                l=strlen(md_tag);
+//printf("\nMD = %s\n", md_tag);
+//printf("QUERY (qlen=%ld)= ", qlen);
+//printf("%s\n", qseq);
+//printf("ALIGNMENT=");
+//for(i=0;i<qlen;i++)
+//{
+// printf ("(%ld)", align2rpos[i]);
+//}
+//printf("\n");
+//i=j=0;
+				while(j<l)
+				{ 
+                                   for(k=j;k<l && isdigit(md_tag[k]);k++);
+                                   tmp = gdl_string_alloc (k-j);
+                                   strncpy(tmp,md_tag+j,k-j);
+                                   i += atoi(tmp);
+//printf(" i += (%s) %ld ==> %ld\n", tmp, atoi(tmp), i);
+                                   j  = k;
+                                   if (k < l)
+                                   {
+				     if (md_tag[j]=='^') 
+                                     {
+                                        //deletion - count the size of the deletion
+                                        for(k=j+1;k<l && !isdigit(md_tag[k]);k++);
+//printf("  Deletion at position (0-based) = %ld + %ld ==> size=%ld ==> %ld ==> ", qpos, i, k-j-1, align2rpos[i-1]+1); 
+                                        allele = gdl_string_alloc (k-j-1);
+                                        strncpy(allele,md_tag+j+1,k-j-1);
+                                        //printf ("[%s]\n", allele);
+                                        variant_buffer_push_deletion (varbuf, align2rpos[i-1]+1, allele);
+                                        GDL_FREE (allele);
+                                        j=k;
+				     }
+                                     else
+                                     { 
+                                        //mutation
+					i++;
+//printf("  Substitution at position (0-based) = %ld + %ld ==> %ld ==> %c ==> %c\n", qpos, i, align2rpos[i-1], md_tag[j], qseq[align2qpos[i-1]]);
+// TODO: MANAGE STRAND
+variant_buffer_push_snp (varbuf, align2rpos[i-1], md_tag[j], qseq[align2qpos[i-1]], qqual[align2qpos[i-1]]);
+                                        j++;
+				     }
+                                   } 
+				}
+                                GDL_FREE(tmp);
+                                GDL_FREE(qseq);
+                                GDL_FREE(align2rpos);
+                                GDL_FREE(align2qpos);
+                                // next
+                                bam_destroy1(bamAlign);
+				bamAlign = bam_init1();
+			}
+                        if (verbose_flag)
+                        {
+                            fprintf(stdout, "[bam_read] %ld alignements processed\n", ac);
+                            fflush(stdout);
+                        }
+                        if (varbuf) {
+                           variant_buffer_release (varbuf, reflen, reflen, fastidx, 0);
+                        }
+                        variant_buffer_free (varbuf);
+			bam_close(stream);
+                        /* Output sequencing error statistics
+                        gdl_string * filename = gdl_string_sprintf("%s_errstats.txt", OUTPUT);
+                        FILE * ostream = gdl_fileopen(filename, "w");
+                        fprintf (ostream, "position\treads\tmutation\tinsertion\tdeletion\tclipped\n");
+			for(i=0;i<MAX_READ_SIZE;i++)
+			{
+			   if (!read_stats[i][0]) break;
+			   fprintf (ostream, "%d\t%ld\t%ld\t%ld\t%ld\t%ld\n", i+1, read_stats[i][0], read_stats[i][2], read_stats[i][3], read_stats[i][4], read_stats[i][1]);
+			}
+                        gdl_fileclose(filename, ostream);
+                        GDL_FREE (filename);
+                        // Output indel statistics
+                        filename = gdl_string_sprintf("%s_indels.txt", OUTPUT);
+                        ostream = gdl_fileopen(filename, "w");
+                        fprintf(ostream, "#insertion_number: %ld\n", indel_stats[0][0]);
+                        fprintf(ostream, "#deletion_number: %ld\n", indel_stats[1][0]);
+			fprintf(ostream, "size\tinsertion\tdeletion\n");
+			for(i=1;i<=max_indel_size;i++)
+			{
+			   fprintf (ostream, "%d\t%ld\t%ld\n", i, indel_stats[0][i], indel_stats[1][i]);
+			}
+                        gdl_fileclose(filename, ostream);
+                        GDL_FREE (filename);*/
+			// Close the stream
+
+		}
+
+		exit(0);
+	}

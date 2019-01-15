@@ -1,0 +1,137 @@
+K 25
+svn:wc:ra_dav:version-url
+V 39
+/svn/mixgenomix/!svn/ver/858/trunk/taxo
+END
+mgx-taxo-match.c
+K 25
+svn:wc:ra_dav:version-url
+V 56
+/svn/mixgenomix/!svn/ver/432/trunk/taxo/mgx-taxo-match.c
+END
+mgx-taxo-taxcmp.c
+K 25
+svn:wc:ra_dav:version-url
+V 57
+/svn/mixgenomix/!svn/ver/432/trunk/taxo/mgx-taxo-taxcmp.c
+END
+mgx-taxo-gi2tax.c
+K 25
+svn:wc:ra_dav:version-url
+V 57
+/svn/mixgenomix/!svn/ver/432/trunk/taxo/mgx-taxo-gi2tax.c
+END
+mgx-taxo-lca.c
+K 25
+svn:wc:ra_dav:version-url
+V 54
+/svn/mixgenomix/!svn/ver/432/trunk/taxo/mgx-taxo-lca.c
+END
+mgx-taxo-getgi.c
+K 25
+svn:wc:ra_dav:version-url
+V 56
+/svn/mixgenomix/!svn/ver/432/trunk/taxo/mgx-taxo-getgi.c
+END
+ncbi_taxo.c
+K 25
+svn:wc:ra_dav:version-url
+V 51
+/svn/mixgenomix/!svn/ver/432/trunk/taxo/ncbi_taxo.c
+END
+mgx-taxo-subset.c
+K 25
+svn:wc:ra_dav:version-url
+V 57
+/svn/mixgenomix/!svn/ver/432/trunk/taxo/mgx-taxo-subset.c
+END
+mgx-taxo-distmat.c
+K 25
+svn:wc:ra_dav:version-url
+V 58
+/svn/mixgenomix/!svn/ver/432/trunk/taxo/mgx-taxo-distmat.c
+END
+mgx-taxo-rankcut.c
+K 25
+svn:wc:ra_dav:version-url
+V 58
+/svn/mixgenomix/!svn/ver/481/trunk/taxo/mgx-taxo-rankcut.c
+END
+taxo.c
+K 25
+svn:wc:ra_dav:version-url
+V 46
+/svn/mixgenomix/!svn/ver/432/trunk/taxo/taxo.c
+END
+mgx-taxo-stat.c
+K 25
+svn:wc:ra_dav:version-url
+V 55
+/svn/mixgenomix/!svn/ver/858/trunk/taxo/mgx-taxo-stat.c
+END
+mgx-taxo-desc.c
+K 25
+svn:wc:ra_dav:version-url
+V 55
+/svn/mixgenomix/!svn/ver/432/trunk/taxo/mgx-taxo-desc.c
+END
+taxo.h
+K 25
+svn:wc:ra_dav:version-url
+V 46
+/svn/mixgenomix/!svn/ver/432/trunk/taxo/taxo.h
+END
+mgx-taxo-newick.c
+K 25
+svn:wc:ra_dav:version-url
+V 57
+/svn/mixgenomix/!svn/ver/432/trunk/taxo/mgx-taxo-newick.c
+END
+simple_taxo.c
+K 25
+svn:wc:ra_dav:version-url
+V 53
+/svn/mixgenomix/!svn/ver/432/trunk/taxo/simple_taxo.c
+END
+mgx-taxo-db.c
+K 25
+svn:wc:ra_dav:version-url
+V 53
+/svn/mixgenomix/!svn/ver/432/trunk/taxo/mgx-taxo-db.c
+END
+mgx-taxo-dot.c
+K 25
+svn:wc:ra_dav:version-url
+V 54
+/svn/mixgenomix/!svn/ver/432/trunk/taxo/mgx-taxo-dot.c
+END
+Makefile.am
+K 25
+svn:wc:ra_dav:version-url
+V 51
+/svn/mixgenomix/!svn/ver/432/trunk/taxo/Makefile.am
+END
+mgx-taxo-simple.c
+K 25
+svn:wc:ra_dav:version-url
+V 57
+/svn/mixgenomix/!svn/ver/432/trunk/taxo/mgx-taxo-simple.c
+END
+mgx-taxo-prune.c
+K 25
+svn:wc:ra_dav:version-url
+V 56
+/svn/mixgenomix/!svn/ver/524/trunk/taxo/mgx-taxo-prune.c
+END
+mgx-taxo-rankget.c
+K 25
+svn:wc:ra_dav:version-url
+V 58
+/svn/mixgenomix/!svn/ver/481/trunk/taxo/mgx-taxo-rankget.c
+END
+mgx-taxo-taxdesc.c
+K 25
+svn:wc:ra_dav:version-url
+V 58
+/svn/mixgenomix/!svn/ver/623/trunk/taxo/mgx-taxo-taxdesc.c
+END

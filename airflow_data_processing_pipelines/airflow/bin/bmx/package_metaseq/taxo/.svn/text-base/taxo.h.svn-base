@@ -1,0 +1,374 @@
+/*
+ *  taxo.h
+ *
+ *  $Author: vervieke $, $Date: 2012/05/18 14:31:50 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMerieux, France.
+ *
+ */
+
+#ifndef __MGX_TAXO_H__
+#define __MGX_TAXO_H__
+
+#include <stdlib.h>
+#include <stdint.h>
+#include <stdio.h>
+
+#include <zlib.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_hash.h>
+#include <gdl/gdl_string.h>
+
+__BEGIN_DECLS
+
+/**
+ * \struct mgx_taxon
+ * \brief A taxon
+ *
+ * A taxon in the taxonomy
+ */
+struct _mgx_taxon
+{
+	size_t depth;                           /*!< The depth of the taxon within the taxonomy */
+	size_t index;							/*!< The absolute index of the taxon within the taxonomy */
+	size_t dfs_index;						/*!< The depth-first-search index of the taxon within the taxonomy */
+	size_t id;							    /*!< The taxon index in the original taxonomy system */
+	size_t nchild;							/*!< The number of children of the taxon */
+	size_t nname;							/*!< The number of names */
+	gdl_string       ** names;				/*!< The names of the taxon */
+	size_t noname;							/*!< The number of orgnanism names */
+	gdl_string       ** onames;				/*!< The organism names attached to the taxon */
+	struct _mgx_taxon  ** children;			/*!< The pointers [1..nchild] to the children */
+	struct _mgx_taxon  * parent;			/*!< The pointers to the parent taxon (NULL if root) */
+	gdl_boolean _visited;                   /*!< PRIVATE: true if the taxon has been visited*/
+	void * extra;							/*!< PRIVATE: a untyped pointer to an object*/
+};
+typedef struct _mgx_taxon mgx_taxon;
+/**
+ * \fn void mgx_taxon * mgx_taxon_alloc (const size_t index)
+ * \brief This function allocates a taxon with the given index
+ *
+ * \param index the index of taxon within the taxonomy
+ *
+ * \return a pointer to an allocated taxon
+ */
+mgx_taxon * mgx_taxon_alloc (const size_t index);
+/**
+ * \fn void mgx_taxon_free (mgx_taxon * t)
+ * \brief This function frees a previously allocated taxon
+ *
+ * \param t the taxon to free
+ */
+void mgx_taxon_free (mgx_taxon * t);
+/**
+ * \fn mgx_taxon * mgx_taxon_fread (FILE * stream)
+ * \brief This function reads a taxon from a binary stream
+ *
+ * \param stream a pointer onto an open stream
+ *
+ * \return a pointer onto the taxon
+ */
+mgx_taxon * mgx_taxon_fread (FILE * stream);
+/**
+ * \fn int mgx_taxon_fwrite (FILE * stream, const mgx_taxon * t)
+ * \brief This function writes a taxon to stream in binary format
+ *
+ * \param stream a pointer onto a writable stream
+ * \param t a pointer onto the taxon
+ *
+ * \return GDL_SUCCESS if succeed, an error code otherwise
+ */
+int mgx_taxon_fwrite (FILE * stream, const mgx_taxon * t);
+/**
+ * \fn int mgx_taxon_add_name (mgx_taxon * t, const gdl_string * taxon_name)
+ * \brief This function adds a name to a taxon
+ *
+ * \param t a pointer to the taxon
+ * \param taxon_name the name to add to the taxon
+ *
+ * \return the number of names for that taxon after the insertion, -1 if failure
+ */
+int mgx_taxon_add_name (mgx_taxon * t, const gdl_string * taxon_name);
+/**
+ * \fn void mgx_dfsNewick (mgx_taxon * t, FILE *stream)
+ * \brief This function converts a taxonomy into Newick format
+ *
+ * \param t a pointer to the taxon
+ * \param stream an open stream
+ * \param print_mode the printing mode for the taxon name (0 = taxid, 1 = taxon name)
+ *
+ * \return write directly in FILE Newick format
+ */
+void mgx_dfsNewick (mgx_taxon * t, FILE *stream, const size_t print_mode);
+/**
+ * \fn int mgx_taxon_attach_organism (mgx_taxon * t, const gdl_string * organism_name)
+ * \brief This function attach an organism to the taxon
+ *
+ * \param t a pointer to the taxon
+ * \param organism_name the organism name to attach to the taxon
+ *
+ * \return the number of organism names for that taxon after the insertion, -1 if failure
+ */
+int mgx_taxon_attach_organism (mgx_taxon * t, const gdl_string * organism_name);
+/**
+ * \fn mgx_taxon_is_leaf(mgx_taxon* taxon)
+ * \brief This function returns true if the taxon is a leaf
+ *
+ * \param t a taxon
+ *
+ * \return 1 if the taxon is a leaf, 0 otherwise
+ */
+// inline function to know if the taxon is a leaf
+#define mgx_taxon_is_leaf(taxon){(taxon->children==0) ? 1 : 0;}
+/**
+ * \struct mgx_taxonomy_rank
+ * \brief The rank handler/table for a taxonomy
+ *
+ * A structure to efficiently handle the rank names
+ * and the link to the taxons
+ */
+typedef struct
+{
+	size_t nrank;                /*!< The number of distinct ranks */
+	gdl_string    ** rank_names; /*!< The rank names as an array [1..nrank] of strings */
+	size_t        * rid2tx;      /*!< The mapping [1..ntaxon] between the ranks and the taxons */
+} mgx_taxonomy_rank;
+/**
+ * \fn mgx_taxonomy_rank * mgx_taxonomy_rank_alloc (const size_t n, const size_t m)
+ * \brief This function allocates a mgx_taxonomy_rank of size n for m taxons
+ *
+ * \param n the number of distinct rank names
+ * \param m the number of taxons
+ *
+ * \return a pointer to an allocated mgx_taxonomy_rank object
+ */
+mgx_taxonomy_rank * mgx_taxonomy_rank_alloc (const size_t n, const size_t m);
+/**
+ * \fn void mgx_taxonomy_rank_free (mgx_taxonomy_rank * r)
+ * \brief This function frees a mgx_taxonomy_rank
+ *
+ * \param r a pointer onto a mgx_taxonomy_rank
+ */
+void mgx_taxonomy_rank_free (mgx_taxonomy_rank * r);
+/**
+ * \fn void mgx_taxonomy_rank_init (mgx_taxonomy_rank * r, gdl_hashtable * rank_buffer)
+ * \brief This function initialize the rank names from the hashtable keys
+ *
+ * \param r a pointer onto a mgx_taxonomy_rank
+ * \param rank_buffer a hashtable providing where the keys stand for the rank names
+ */
+void mgx_taxonomy_rank_init (mgx_taxonomy_rank * r, gdl_hashtable * rank_buffer);
+/**
+ * \fn mgx_taxonomy_rank * mgx_taxonomy_rank_fread (FILE * stream, const size_t ntaxon);
+ * \brief This function reads a taxonomy rank structure from a binary stream
+ *
+ * \param stream a pointer onto an open stream
+ * \param ntaxon the number of taxons
+ *
+ * \return a pointer onto the taxonomy rank structure
+ */
+mgx_taxonomy_rank * mgx_taxonomy_rank_fread (FILE * stream, const size_t ntaxon);
+/**
+ * \fn int mgx_taxonomy_fwrite (FILE * stream, const mgx_taxonomy * t)
+ * \brief This function writes a taxonomy rank structure to stream in binary format
+ *
+ * \param stream a pointer onto a writable stream
+ * \param t a pointer onto the taxonomy rank structure
+ * \param ntaxon the number of taxons
+ *
+ * \return GDL_SUCCESS if succeed, an error code otherwise
+ */
+int mgx_taxonomy_rank_fwrite (FILE * stream, const mgx_taxonomy_rank * r, const size_t ntaxon);
+/**
+ * \struct mgx_taxonomy
+ * \brief A taxonomy
+ *
+ * A structure to handle an entire taxonomy and related data
+ */
+typedef struct
+{
+	size_t ntaxon;             		/*!< The number of taxons */
+	size_t noid;					/*!< The number of organisms */
+	size_t maxdepth;				/*!< The maximum depth of the taxonomy */
+	size_t maxdegree;				/*!< The maximum degree of the taxonomy */
+	mgx_taxonomy_rank * ranks;		/*!< The taxonomy ranks */
+	mgx_taxon     ** taxons;   		/*!< The taxons */
+	mgx_taxon     *  root;     		/*!< The root of the taxonomy */
+	size_t        n_taxid2index;    /*!< The size of the mapping array between initial taxid and the one within the taxonomy */
+	size_t        * taxid2index;     /*!< Array[1..n_taxid2index] mapping between initial taxid and the one within the taxonomy */
+	// private
+	size_t * E,*L,*H,**M;           /*!< PRIVATE:E,L,H and M are arrays for internal usage */
+} mgx_taxonomy;
+
+typedef gdl_hashtable mgx_taxonomy_lookup_index;
+/**
+ * \fn mgx_taxon * mgx_taxononomy_lookup(const mgx_taxonomy * t, mgx_taxonomy_lookup_index * index, const gdl_string * key)
+ * \brief This function returns a taxon associated to the given key (if any)
+ *
+ * \param t a pointer onto the taxonomy
+ * \param index a pointer onto a taxonomy lookup table
+ * \param key the key for which the corresponding taxon is looking for
+ *
+ * \return a pointer onto the corresponding mgx_taxon, NULL otherwise
+ */
+mgx_taxon * mgx_taxonomy_lookup(const mgx_taxonomy * t, mgx_taxonomy_lookup_index * index, const gdl_string * key);
+/**
+ * \fn mgx_taxonomy * mgx_taxonomy_alloc (const size_t ntaxon)
+ * \brief This function allocates a taxonomy
+ *
+ * \param ntaxon the number of taxons in the taxonomy
+ *
+ * \return a pointer onto an allocated mgx_taxonomy
+ */
+mgx_taxonomy * mgx_taxonomy_alloc (const size_t ntaxon);
+/**
+ * \fn void mgx_taxonomy_free (mgx_taxonomy * t)
+ * \brief This function frees a taxonomy
+ *
+ * \param t a pointer onto the taxonomy to free
+ */
+void mgx_taxonomy_free (mgx_taxonomy * T);
+/**
+ * \fn mgx_taxonomy * mgx_taxonomy_fread (FILE * stream)
+ * \brief This function reads a taxonomy from a binary stream
+ *
+ * \param stream a pointer onto an open stream
+ *
+ * \return a pointer onto the taxonomy
+ */
+mgx_taxonomy * mgx_taxonomy_fread (FILE * stream);
+/**
+ * \fn int mgx_taxonomy_fwrite (FILE * stream, const mgx_taxonomy * t)
+ * \brief This function writes a taxonomy to stream in binary format
+ *
+ * \param stream a pointer onto a writable stream
+ * \param t a pointer onto the taxonomy
+ *
+ * \return GDL_SUCCESS if succeed, an error code otherwise
+ */
+int mgx_taxonomy_fwrite (FILE * stream, const mgx_taxonomy * t);
+/**
+ * \fn int mgx_taxonomy_attach_organism (mgx_taxonomy * t, FILE * stream)
+ * \brief This function reads a organism name -> taxon id/name table and attach the organisms
+ *        to the corresponding taxons
+ *
+ * \param t a pointer onto the taxonomy
+ * \param stream a pointer onto a readable stream
+ * \param mode 0=internal index,1=ncbi index,3=taxon name
+ *
+ * \return GDL_SUCCESS if succeed, an error code otherwise
+ */
+int mgx_taxonomy_attach_organism (mgx_taxonomy * t, FILE * stream, const size_t mode);
+/**
+ * \fn void mgx_taxonomy_euler_tour (mgx_taxonomy * t)
+ * \brief This function performs an Euler tour of the taxonomy
+ *
+ * \param t a pointer onto the taxonomy
+ */
+void mgx_taxonomy_euler_tour (mgx_taxonomy * t);
+/**
+ * \fn void mgx_taxonomy_rmq_prepare (mgx_taxonomy * t)
+ * \brief This function prepares the range-min queries underlying the lca function
+ *
+ * \param t a pointer onto the taxonomy
+ */
+void mgx_taxonomy_rmq_prepare (mgx_taxonomy * t);
+/**
+ * \fn int  mgx_taxonomy_lca_pair (mgx_taxonomy * t, const size_t i, const size_t j)
+ * \brief This function returns the least common ancestor of a pair of taxons
+ *
+ * \param t a pointer onto the taxonomy
+ * \param i the index of the first taxon
+ * \param j the index of the second taxon
+ *
+ * \return the index of the least common ancestor of i and j, -1 if fails
+ */
+int mgx_taxonomy_lca_pair (mgx_taxonomy * t, const size_t i, const size_t j);
+/**
+ * \fn int  mgx_taxonomy_lca_set (mgx_taxonomy * t, const size_t n, const size_t taxon_index[])
+ * \brief This function returns the least common ancestor of an array of taxons
+ *
+ * \param t a pointer onto the taxonomy
+ * \param n the taxon array size
+ * \param taxon_index the indexes of the n taxons
+ *
+ * \return the index of the least common ancestor of the array of taxons
+ */
+int mgx_taxonomy_lca_set (mgx_taxonomy * t, const size_t n, const size_t * taxon_index);
+/**
+ * \fn mgx_taxonomy_lookup_index * mgx_taxonomy_taxon_lookup_build (mgx_taxonomy * t, const gdl_string * attribute)
+ * \brief This function build a taxonomy lookup index table w.r.t the given taxon attribute
+ *
+ * \param t a pointer onto the taxonomy
+ * \param attribute the attribute to index: either "name" or "organism"
+ *
+ * \return a pointer onto a taxonomy lookup index table
+ */
+mgx_taxonomy_lookup_index * mgx_taxonomy_taxon_lookup_build (mgx_taxonomy * t, const gdl_string * attribute);
+/**
+ * \struct mgx_taxonomy_factory
+ * \brief A taxonomy factory
+ *
+ * An interface for taxononomy factories
+ */
+
+void mgx_taxonomy_dfs_index (mgx_taxonomy * t);
+/**
+ * \brief This function initializes depth first search indices of the taxons
+ */
+
+void mgx_taxonomy_dfs_index_build(mgx_taxonomy * t, int taxon_id, int * cptr);
+/**
+ * \brief This function is a utility for mgx_taxonomy_dfs_index
+ */
+
+void mgx_taxonomy_max_depth (mgx_taxonomy * taxo);
+/**
+ * \brief This function computes the maximum depth of the taxonomy
+ */
+
+void mgx_taxonomy_max_degree (mgx_taxonomy * taxo);
+/**
+ * \brief This function computes the maximum degree of the taxonomy
+ */
+
+void mgx_taxonomy_update_depth (mgx_taxonomy * taxo, int taxon_id);
+/**
+ * \brief This function recursively updates the depth field of taxons below the taxon of index taxon_id
+ */
+
+typedef struct
+{
+	gdl_string * name;                                                     /*!< The factory name */
+	mgx_taxonomy * (*read)(const gdl_string * conf_file);                  /*!< A pointer to a function to read a taxonomy from file(s) */
+	int (*write)(const mgx_taxonomy * T, const gdl_string * output_stem);  /*!< A pointer to a function to write a taxonomy into file(s) */
+} mgx_taxonomy_factory;
+/**
+* \var const mgx_taxonomy_factory * mgx_taxonomy_ncbi_factory
+*
+* \brief The NCBI taxonomy factory
+*/
+GDL_VAR const mgx_taxonomy_factory * mgx_taxonomy_ncbi_factory;
+/**
+* \var const mgx_taxonomy_factory * mgx_taxonomy_simple_factory
+*
+* \brief The simple, two column file, taxonomy factory
+*/
+GDL_VAR const mgx_taxonomy_factory * mgx_taxonomy_simple_factory;
+/**
+ * \fn const mgx_taxonomy_factory * mgx_taxonomy_factory_lookup (const gdl_string * taxo_name)
+ * \brief This function returns a taxonomy factory
+ *
+ * \param taxo_name the name of a taxonomy factory (e.g. ncbi)
+ *
+ * \return a pointer onto the corresponding factory, NULL otherwise
+ */
+const mgx_taxonomy_factory * mgx_taxonomy_factory_lookup (const gdl_string * taxo_name);
+
+__END_DECLS
+
+#endif

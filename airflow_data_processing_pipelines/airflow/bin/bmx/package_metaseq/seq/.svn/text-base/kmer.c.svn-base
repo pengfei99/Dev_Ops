@@ -1,0 +1,473 @@
+/*
+ *  kmer.c
+ *
+ *  $Author: veyriejb $, $Date: 2011/05/03 10:21:51 $, $Version$
+ *
+ *  MetagenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#include <stdint.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_types.h>
+#include <gdl/gdl_bit_vector.h>
+
+#include "kmer.h"
+
+/*
+mgx_kmer *
+mgx_kmer_stralloc (const gdl_string * kmr_string)
+{
+	size_t i, n;
+	mgx_kmer * kmr;
+
+	n = strlen(kmr_string);
+	if (n > 32)
+	{
+		GDL_WARNING("Kmer of size > 32: only 32 first bases will be used", GDL_EINVAL);
+		n = 32;
+	}
+
+	kmr = gdl_bit_vector_alloc (2*n);
+
+	for(i = 0; i < n; i++)
+	{
+		switch(kmr_string[i])
+		{
+			case 'A':
+			case 'a':
+				gdl_bit_vector_set(kmr, 2*i);
+				break;
+			case 'C':
+			case 'c':
+				gdl_bit_vector_set(kmr, 2*i+1);
+				break;
+			case 'G':
+			case 'g':
+				gdl_bit_vector_set(kmr, 2*i);
+				gdl_bit_vector_set(kmr, 2*i+1);
+				break;
+			case 'T':
+			case 't':
+				break;
+			default:
+				GDL_WARNING("Only A,a,T,t,C,c,G,g letters are understood for creating kmers", GDL_EINVAL);
+				return 0;
+		}
+	}
+
+	return kmr;
+}
+
+mgx_kmer *
+mgx_kmer_uint64alloc (const uint64_t kmr_uint64)
+{
+	size_t i, n;
+	mgx_kmer * kmr;
+
+	uint64_t tmp = kmr_uint64;
+
+	for (n=0; tmp != 0; tmp<<=1)
+	{
+		if (tmp & 01)
+		{
+		   break;
+		}
+		n++;
+	}
+
+	kmr = gdl_bit_vector_alloc (2*n);
+
+	return kmr;
+}
+
+mgx_kmer *
+mgx_kmer_revcomp (const mgx_kmer * kmr)
+{
+
+}
+
+gdl_uint64
+mgx_kmer2uint64 (const mgx_kmer * kmr)
+{
+
+}
+
+gdl_string *
+mgx_kmer2string (const mgx_kmer * kmr)
+{
+
+}
+
+*/
+
+
+/*==================================================================
+ *
+ * mgx_kmerdb
+ *
+ *==================================================================*/
+
+mgx_kmerdb *
+mgx_kmerdb_alloc (const size_t nprofiles)
+{
+	mgx_kmerdb * db;
+
+	db = GDL_CALLOC (mgx_kmerdb, 1);
+
+	db->size      		= nprofiles;
+	db->profiles      	= GDL_CALLOC (mgx_kmerprofile *, nprofiles);
+	db->profile_ids 	= GDL_CALLOC (size_t, nprofiles);
+	db->nseq = 0;
+	db->nkmer = 0;
+	db->smoothing = 0;
+	return db;
+}
+
+
+void
+mgx_kmerdb_free (mgx_kmerdb * db)
+{
+	if (db)
+	{
+		size_t i;
+		for(i = 0; i < db->size; i++)
+		{
+			mgx_kmerprofile_free (db->profiles[i]);
+		}
+		GDL_FREE(db->profiles);
+ 		GDL_FREE(db->profile_ids);
+		if(db->profile_probs){
+			GDL_FREE(db->profile_probs);
+		}
+		GDL_FREE (db);
+	}
+}
+
+
+
+
+void mgx_kmerdb_count_kmers(mgx_kmerdb * db){
+	db->nkmer = 0;
+	// initialize hash table to store kmer indices	
+    	gdl_hashtable *ind_list;
+	ind_list = gdl_hashtable_alloc (gdl_interface_uint, 0);
+	// loop on profiles
+	size_t *ind;
+	size_t i;
+	for(i = 0; i < db->size; i++){
+		// loop on the features
+		gdl_hashtable_itr * hash_itr = gdl_hashtable_iterator(db->profiles[i]->counts);
+		do {
+			if ((ind=gdl_hashtable_lookup (ind_list,gdl_hashtable_iterator_key(hash_itr))) == 0) {
+				ind = GDL_CALLOC (size_t, 1);
+				*ind = 1;
+				gdl_hashtable_add (ind_list, gdl_hashtable_iterator_key(hash_itr), ind, 1);
+				db->nkmer++;
+			}
+                } while (gdl_hashtable_iterator_next(hash_itr));
+		gdl_hashtable_iterator_free(hash_itr);
+	}
+	// free memory
+      	gdl_hashtable_free(ind_list);
+}
+
+
+
+void mgx_kmerdb_count_sequences(mgx_kmerdb *db){
+	size_t i;
+	db->nseq = 0;
+	for(i = 0; i < db->size; i++){
+		db->nseq += db->profiles[i]->nseq;
+	}
+}
+
+
+
+void mgx_kmerdb_fit_nb(mgx_kmerdb * db, double smoothing, size_t model){
+	size_t i, j;
+	// set db parameters
+	db->smoothing = smoothing;
+	db->model = model;
+	// compute class/profile priors = nseq / sum(nseq) //
+	//-------------------------------------------------//
+	// allocate memory
+	db->profile_probs 	= GDL_CALLOC (double, db->size);
+	// fill values
+	for(i = 0; i < db->size; i++){
+		db->profile_probs[i] = ((double)db->profiles[i]->nseq) / ((double)db->nseq);
+	}
+	// compute profile multinomial probabilities //
+	//-------------------------------------------//
+	// NB : VALID FOR MODEL == 0 OR MODEL == 1
+	double * val = 0;	
+	for(i = 0; i < db->size; i++){
+		gdl_hashtable_itr * hash_itr = gdl_hashtable_iterator(db->profiles[i]->counts);
+		// loop on the features
+		do {
+			val = (double *) gdl_hashtable_iterator_value(hash_itr);
+			*val = (smoothing + *val) / (smoothing*(double)db->nkmer + (double)db->profiles[i]->totCounts);
+                } while (gdl_hashtable_iterator_next(hash_itr));
+		gdl_hashtable_iterator_free(hash_itr);
+	}
+}
+
+
+
+
+
+int
+mgx_kmerdb_fwrite (FILE * stream, const mgx_kmerdb * db)
+{
+	if (stream && db)
+	{
+		int status;
+		unsigned char has;
+		size_t i;
+		// write size of the db
+		status = fwrite (&(db->size), sizeof(size_t), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		// write number of sequences
+		status = fwrite (&(db->nseq), sizeof(size_t), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		// write number of distinct kmers
+		status = fwrite (&(db->nkmer), sizeof(size_t), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		// write model
+		status = fwrite (&(db->model), sizeof(size_t), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		// write smoothing parameter
+		status = fwrite (&(db->smoothing), sizeof(double), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		// write profile ids
+		if( db->size > 0){
+			for(i = 0; i < db->size; i++){
+				status = fwrite (&(db->profile_ids[i]), sizeof(size_t), 1, stream);
+				GDL_FWRITE_STATUS (status, 1);
+			}
+		}
+		// write kmer-profiles
+		if( db->size > 0){
+			for(i = 0; i < db->size; i++){
+				status = mgx_kmerprofile_fwrite (stream, db->profiles[i]);
+				GDL_FWRITE_STATUS (status, GDL_SUCCESS);
+			}
+		}
+		// write profile probs if necessary
+		has = (db->profile_probs) ? 'y' : 'n';
+		status = fwrite (&(has), sizeof(unsigned char), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		if (has == 'y')
+		{
+			if( db->size > 0){
+				for(i = 0; i < db->size; i++){
+					status = fwrite (&(db->profile_probs[i]), sizeof(double), 1, stream);
+					GDL_FWRITE_STATUS (status, 1);
+				}
+			}
+		}
+		// return success
+		return GDL_SUCCESS;
+	}
+	// return failure
+	return GDL_EINVAL;
+}
+
+
+
+mgx_kmerdb *
+mgx_kmerdb_fread (FILE * stream)
+{
+
+	if (stream)
+	{
+		int status;
+		size_t i;
+		unsigned char has;
+		mgx_kmerdb * db;
+		// read size of the db
+		status = fread (&i, sizeof(size_t), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		// initialize kmerdb
+    		db = mgx_kmerdb_alloc (i);
+		// read number of sequences
+		status = fread (&db->nseq, sizeof(size_t), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		// read number of kmers
+		status = fread (&db->nkmer, sizeof(size_t), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		// read model
+		status = fread (&db->model, sizeof(size_t), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		// read smoothing parameter
+		status = fread (&db->smoothing, sizeof(double), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		// read profile ids
+		if( db->size > 0){
+			for(i = 0; i < db->size; i++){
+				 //db->profile_ids[i] = gdl_string_fread (stream);
+				 //GDL_FREAD_STATUS (db->profile_ids[i]!=0, 1);
+				 status = fread (&db->profile_ids[i], sizeof(size_t), 1, stream);
+				 GDL_FWRITE_STATUS (status, 1);
+			}
+		}
+		// read kmer-profiles
+		if( db->size > 0){
+			for(i = 0; i < db->size; i++){
+				db->profiles[i] = mgx_kmerprofile_fread (stream);
+				GDL_FREAD_STATUS (db->profiles[i]!=0, 1);
+			}
+		}
+		// read probs if necessary
+		status = fread (&(has), sizeof(unsigned char), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		if (has == 'y')
+		{
+			if( db->size > 0){
+				db->profile_probs = GDL_CALLOC(double, db->size);
+				for(i = 0; i < db->size; i++){
+					status = fread (&db->profile_probs[i], sizeof(double), 1, stream);
+					GDL_FWRITE_STATUS (status, 1);
+				}
+			}
+		}
+		// return kmerdb
+		return db;
+	}
+
+	return 0;
+
+}
+
+
+// build profile x count matrix based on db->profiles->counts
+// if format = 0 : return value
+// if format = 1 : return log(value)
+double ** mgx_kmerdb_get_count_matrix(mgx_kmerdb * db, size_t format){
+
+		double **P;
+		double *p;		
+		size_t i, j;
+		char buf[50];
+
+		// allocate memory
+		P = GDL_CALLOC (double *,  db->size);
+		for(i = 0; i < db->size; i++){
+			P[i] =  GDL_CALLOC (double, db->nkmer);
+		}
+		// fill matrix
+		for(i = 0; i < db->size; i++){
+			for(j = 0; j < db->nkmer; j++){
+				sprintf(buf, "%d", j+1);
+				p = (double *) gdl_hashtable_lookup (db->profiles[i]->counts, buf);
+				if(p != 0){
+					if(format == 0){
+						P[i][j] = (*p);
+					}
+					if(format == 1){
+						P[i][j] = log((*p));
+					}
+				}
+			}
+		}
+		// return 
+		return P;
+
+}
+
+
+/*==================================================================
+ *
+ * mgx_kmerprofile
+ *
+ *==================================================================*/
+
+mgx_kmerprofile *
+mgx_kmerprofile_alloc (const size_t nkmer, const size_t nseq)
+{
+	mgx_kmerprofile * p;
+
+	p = GDL_CALLOC(mgx_kmerprofile, 1);
+
+	p->nkmer = nkmer;
+	p->nseq = nseq;
+	p->totCounts = 0;
+
+	//p->counts = gdl_hashtable_alloc (gdl_interface_uint, 0);
+	p->counts = gdl_hashtable_alloc (gdl_interface_double, 0);
+
+	return p;
+}
+
+void
+mgx_kmerprofile_free (mgx_kmerprofile * p)
+{
+	if (p)
+	{
+	       	gdl_hashtable_free(p->counts);
+		GDL_FREE (p);
+	}
+}
+
+
+int
+mgx_kmerprofile_fwrite (FILE * stream, const mgx_kmerprofile * p)
+{
+	if (stream && p)
+	{
+		int status;
+		unsigned char has;
+		size_t i;
+		// write number of kmers
+		status = fwrite (&(p->nkmer), sizeof(size_t), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		// write number of sequences used to build the profile
+		status = fwrite (&(p->nseq), sizeof(size_t), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		// write total count of kmers
+		status = fwrite (&(p->totCounts), sizeof(size_t), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		// write counts
+		status = gdl_hashtable_fwrite(stream, p->counts);
+		GDL_FWRITE_STATUS (status, GDL_SUCCESS);
+		return GDL_SUCCESS;
+	}
+	return GDL_EINVAL;
+}
+
+
+mgx_kmerprofile *
+mgx_kmerprofile_fread (FILE * stream)
+{
+
+	if (stream)
+	{
+		int status;
+		size_t i;
+		mgx_kmerprofile * p;
+		// alloc profile
+		p = mgx_kmerprofile_alloc(0,0);
+		// read number of kmers
+		status = fread (&i, sizeof(size_t), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		p->nkmer = i;
+		// read number of sequences used to build the profile
+		status = fread (&i, sizeof(size_t), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		p->nseq = i;
+		// read total number of counts
+		status = fread (&i, sizeof(size_t), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		p->totCounts = i;
+		// read counts
+  		gdl_hashtable_fread(stream, p->counts);
+		// return profile
+		return p;
+	}
+	return 0;
+}
+
+

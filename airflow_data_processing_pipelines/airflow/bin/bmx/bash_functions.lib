@@ -1,0 +1,489 @@
+#! /bin/bash
+
+# Display error message and exit
+error_message(){
+	
+	MESSAGE=${1}
+	echo "${MESSAGE}"
+	exit 1
+	
+}
+
+# If value in parameter is not boolean, error message and exit
+boolean_values(){
+	
+	VALUE=${1}
+
+	if [[ ${VALUE} -ne 0 && ${VALUE} -ne 1 ]]; then error_message "VALUE is not equal to 0 or 1." ; fi
+
+}
+
+# Test whether a file exists or not
+file_exists(){
+	
+	FILE=${1}
+
+	if [[ ! -e ${FILE} ]]; then error_message "${FILE} does not exist." ; fi
+
+}
+
+# Execute a command
+# Time record of the command execution
+# If error code is different of 0, then error_message and exit
+run_cmd(){
+	
+	# $@ takes arguments as an array --> no "space" problem (commands often contains spaces)
+	# if run_cmd is used with a variable between simple quotes (run_cmd '$CMD') and the arguments caught by ${1} variable, spaces would not be interpreted but redirections would be ignored
+	local CMD=$@
+	
+	# Special caracters
+	# Special caracters like '(' must be replaced by '\(' in ${CMD}
+	# Other special caracters: ')'
+	# Commands which contains '|' that must be replaced by '\|' must have been modified before calling run_cmd (because in other cases, '|' must be interpreted as redirection and thus not be replaced by '\|')
+	# Commands which contains ''' that must be replaced by '\'' must have been modified before calling run_cmd (because in other cases, ''' must not be predicted like in perl -ane ' ... ' commands)
+	# idem with '(' and ')'
+	
+	# Following the execution of a pipe, a $? gives the exit status of the last command executed.
+	
+	echo "${CMD}"
+	eval time ${CMD}
+	local error_code=$?
+		
+	if [ ${error_code} -ne 0 ]; then
+		
+		local message=${CMD%% *}
+		
+		if [ ${error_code} -eq 127 ]; then
+			
+			# Command not found
+			echo "Command not found. ${message} is not in your PATH environment variable. Check dependencies."
+			exit ${error_code}
+
+		else
+			
+			# Execution error
+			echo "Error while ${message} execution."
+			exit ${error_code}
+
+		fi		
+	fi
+
+}
+
+# Same function as run_cmd without error_code testing
+run_cmd_2(){
+	
+	# $@ takes arguments as an array --> no "space" problem (commands often contains spaces)
+	# if run_cmd is used with a variable between simple quotes (run_cmd '$CMD') and the arguments caught by ${1} variable, spaces would not be interpreted but redirections would be ignored
+	local CMD=$@
+	
+	# Special caracters
+	# Special caracters like '(' must be replaced by '\(' in order to not be interpretated as pipes in ${CMD}
+	# Other special caracters: ')'
+	# Commands which contains '|' that must be replaced by '\|' must have been modified before calling run_cmd (because in other cases, '|' must be interpreted as redirection and thus not be replaced by '\|')
+	# Commands which contains ''' that must be replaced by '\|' must have been modified before calling run_cmd (because in other cases, ''' must not be predicted like in perl -ane ' ... ' commands)
+	# idem with '(' and ')'
+	
+	echo "${CMD}"
+	eval time ${CMD}
+	local error_code=$?
+
+}
+
+# gunzip a file in a directory
+ungz_in_dir(){
+	
+	PATH_FILE_TO_UNGZ=${1}
+	TEMP_DIR=${2}	
+	
+	if (expr match "${PATH_FILE_TO_UNGZ}" '.*\(.gz$\)') ; then
+		
+		# Create temp directory
+		create_directory ${TEMP_DIR}
+		
+		# gunzip
+		FILE_BASENAME=$( getBasename ${PATH_FILE_TO_UNGZ} )
+		PATH_TO_TEMP_FILE=${TEMP_DIR}/${FILE_BASENAME}
+		echo "Unzip file ${PATH_TO_TEMP_FILE} in ${TEMP_DIR}"
+		CMD="gunzip -c ${PATH_FILE_TO_UNGZ} > ${PATH_TO_TEMP_FILE}"
+		run_cmd ${CMD}
+
+	fi
+
+}
+
+ungz(){
+	
+	PATH_FILE_TO_UNGZ=${1}
+	OUTPUT_FILE=${2}	
+	
+	if (expr match "${PATH_FILE_TO_UNGZ}" '.*\(.gz$\)') ; then
+		
+		# Create output directory if it does not exist
+		OUT_DIR=$(getDirname ${OUTPUT_FILE})		
+		create_directory ${OUT_DIR}
+		
+		# gunzip
+		CMD="gunzip -c ${PATH_FILE_TO_UNGZ} > ${OUTPUT_FILE}"
+		run_cmd ${CMD}
+
+	fi
+
+}
+
+
+# Symlink creation
+create_symlink(){
+	
+	PATH_TO_POINTED_FILE=${1}
+	PATH_TO_SYMLINK=${2}
+	
+	if [[ -h ${PATH_TO_SYMLINK} ]]; then
+		# Remove symlink and recreate
+		CMD="rm -f ${PATH_TO_SYMLINK}"
+		run_cmd ${CMD}
+	fi
+
+	CMD="ln -s ${PATH_TO_POINTED_FILE} ${PATH_TO_SYMLINK}"
+	run_cmd ${CMD}
+
+}
+
+# Directory creation
+create_directory(){
+	
+	PATH_TO_DIRECTORY=${1}
+	
+	# If directory does not exist, then mkdir
+	if [ ! -d ${PATH_TO_DIRECTORY} ]; then CMD="mkdir ${PATH_TO_DIRECTORY}" ; run_cmd ${CMD} ; fi
+
+}
+
+# File creation
+create_file(){
+	PATH_TO_FILE=${1}
+	
+	if [ ! -e ${PATH_TO_FILE} ]; then
+		CMD="> ${PATH_TO_FILE}"
+		run_cmd ${CMD}	
+	fi
+}
+
+
+####### SGE ####
+function SGE_jobid {
+    
+    local OUTPUT=$( eval $* )
+    echo ${OUTPUT} | head -n1 | sed -e 's/[^0-9]//g' 
+
+	}
+# Test if the job with a given jobid is running (appear in the command qacct)
+function SGE_jobid_run {
+	
+	local runningJobs=$( qstat )
+	local nbjobid_run=$( echo ${runningJobs} | grep ${1} | wc -l )
+	if [[ ${nbjobid_run} -ge 1 ]] ; then  return 1 ; else return 0 ; fi
+
+}
+################
+
+
+# Get LSF jobid. The function gets only 1 parameter: a character string with the LFS command starting with bsub
+function LSF_jobid {
+    
+    local OUTPUT=$( eval $* )
+    echo ${OUTPUT} | head -n1 | cut -d'<' -f2 | cut -d'>' -f1
+
+}
+
+# Test if the job with a given jobid is running (appear in the command bjobs)
+function jobid_run {
+	
+	local runningJobs=$( bjobs )
+	local nbjobid_run=$( echo ${runningJobs} | grep ${1} | wc -l )
+	if [[ ${nbjobid_run} -ge 1 ]] ; then  return 1 ; else return 0 ; fi
+
+}
+
+function job_status {
+	
+	local JOB_ID=${1}
+	echo $( bjobs ${JOB_ID} | sed '1d' | head -n 1 | sed 's/\s\+/\t/g' | cut -d $'\t' -f 3 )
+
+}
+
+function job_status_SGE {
+	
+	local JOB_ID=${1}
+	status=$( qacct -j ${JOB_ID} | grep "exit_status" | grep "0" | wc -l )
+
+}
+
+function print_array {
+	
+	local ARRAY=( "$@" )
+	for ELEMENT in "${ARRAY[@]}"
+	do
+		echo ${ELEMENT}
+	done
+
+}
+
+# Test if all jobs are successfully completed
+# Input: a job id or an array of job ids
+## exemples:
+### ids=( '122464' '122465' '122467' )
+# Job status:
+# The status of job 122464 is DONE.
+# The status of job 122465 is DONE.
+# The status of job 122467 is DONE.
+# All the jobs were successfully completed. Keep going !
+### ids=( '122464' )
+# successful_jobs ${ids[@]}
+# Job status:
+# The status of job 122464 is DONE.
+# All the jobs were successfully completed. Keep going !
+### ids=122464
+# successful_jobs ${ids}
+# Job status:
+# The status of job 122464 is DONE.
+# All the jobs were successfully completed. Keep going !
+function successful_jobs {
+	
+	local job_ids_array=( "$@" )
+	NB_JOBS=${#job_ids_array[@]}
+	NB_NON_SUCCESSFUL_JOBS=0
+	echo "Job status:"
+	
+	for (( INDEX=0 ; INDEX<${NB_JOBS} ; INDEX++ ))
+	do
+		
+		STATUS=$( job_status ${job_ids_array[${INDEX}]} )
+		echo "The status of job ${job_ids_array[${INDEX}]} is ${STATUS}."		
+		
+		if [[ ${STATUS} != "DONE" ]]; then NB_NON_SUCCESSFUL_JOBS=$(( ${NB_NON_SUCCESSFUL_JOBS} + 1 )) ; fi
+
+	done
+
+	if [[ ${NB_NON_SUCCESSFUL_JOBS} -ne 0 ]]; then error_message "At least one of the jobs was not successfully completed. Exit." ; else echo "All the jobs were successfully completed. Keep going !" ; fi
+
+}
+
+
+function successful_jobs_SGE {
+	
+	local job_ids_array=( "$@" )
+	NB_JOBS=${#job_ids_array[@]}
+	NB_NON_SUCCESSFUL_JOBS=0
+	
+	for (( INDEX=0 ; INDEX<${NB_JOBS} ; INDEX++ ))
+	do
+		STATUS=$( job_status_SGE ${job_ids_array[${INDEX}]} )
+		echo ${STATUS}
+
+		if [[ ${STATUS} != 1 ]] ; then NB_NON_SUCCESSFUL_JOBS=$(( ${NB_NON_SUCCESSFUL_JOBS} + 1 )) ; else echo "Job ${job_ids_array[${INDEX}]} terminated correctly." ; fi
+
+	done
+	
+	if [[ ${NB_NON_SUCCESSFUL_JOBS} -ne 0 ]]; then echo "At least one of the jobs was not successfully completed. Exit"	; else echo "All the jobs were successfully completed. Keep going !" ; fi
+
+}
+
+## output everything after the first dot
+## example: sample1.step1.fastq => step1.fastq
+## example: sample.fastq => fastq
+## example: sample.tar.gz => tar.gz
+function getExtensionLong {
+	
+	local FILENAME=${1}
+	echo ${FILENAME#*.}
+
+}
+
+
+## output everything after the last dot
+## example: sample1.step1.fastq => fastq
+## example: sample.fastq => fastq
+## example: sample.tar.gz => gz
+function getExtensionShort {
+	
+	local FILENAME=${1}
+	echo ${FILENAME##*.}
+
+}
+
+## output the filename (without the entire path) with the extension
+## example: /home/toto/sample1.fastq => sample1.fastq
+## example: sample1.fastq => sample1.fastq
+## example: ./sample1.fastq => sample1.fastq
+function getFilename {
+	local FILENAME=${1}
+	echo $( basename ${FILENAME} ) 
+}
+
+
+## output the path directory  (without the final slash
+## example getDirname /home/toto/file.txt => /home/toto
+## example getDirname file.txt => .
+function getDirname {
+	
+	local FILENAME=${1}
+	echo $( dirname ${FILENAME} )	
+
+}
+
+## output the file basename, after the last slash and before the last dot
+## example: getBasename /home/titi/sample1.fastq => sample1
+## example: getBasename sample1.fastq => sample1
+## example: getBasename sample1.fastq.gz => sample1.fastq (use getBasenameExt if you want to specify the extension and remove a given pattern)
+## example: getBasename /toto/titi/tata/ => tata
+## example: getBasename /toto/titi/tata => tata
+function getBasename {
+	
+	local FILENAME=${1}
+	local FILE=$( getFilename ${FILENAME} )
+	echo ${FILE} | sed 's/\.[^.]*$//'
+
+}
+
+
+## output the file basename, after the last slash and before the extension
+## example: getBasenameExt /home/titi/sample1.fastq fastq => sample1
+## example: getBasenameExt sample1.fastq fastq => sample1
+## example: getBasenameExt sample1.fastq.gz fastq.gz => sample1
+function getBasenameExt {
+	
+	local FILENAME=${1}
+	local EXTENSION=${2}
+	local FILE=$( getFilename ${FILENAME} )
+	echo ${FILE} | sed  "s/\.${EXTENSION}//"
+
+}
+
+## substitutes the extension of a file (after the last dot) with an other one
+## example: substExt toto.sff fastq => toto.fastq
+## example: substExt toto_sff.sff fastq => toto_sff.fastq
+## example: substExt toto.sff_reads.sff fastq => toto.sff_reads.fastq
+## example: substExt /home/titi/sample1.fastq sff => /home/titi/sample1.sff
+function substExt {
+	
+	local FILENAME=${1}
+	local NEW_EXTENSION=${2}
+	local OLD_EXTENSION=$( getExtensionShort ${FILENAME} )
+	
+	# substitution
+	echo ${FILENAME/%.${OLD_EXTENSION}/.${NEW_EXTENSION}} # replaces back-end match of '.${OLD_EXTENSION}' with '.${NEW_EXTENSION'
+
+}
+
+## Output the file basename, after the last slash and before the first dot
+## example: getBasenameShort /home/titi/sample1.fastq.gz => sample1
+## example: getBasenameShort /home/titi/sample1.fastq.gz.gz => sample1
+## example: getBasenameShort /home/titi/sample1.fastq => sample1 
+## example: getBasenameShort sample1.fastq => sample1
+## example: getBasenameShort sample1.fastq.gz => sample1
+## example: getBasenameShort ./output/2011_06_16_19_34_40/30-Mapping/20-Reference_genomes/Staphylococcus_aureus_subsp._aureus_Mu50_263_2/10-Mapped_reads/tmp_bwa/1.GAC.454Reads.fq ==> 1
+## example: getBasenameShort /vol/RD_DATA_FC3/SERVICES/PRG0023-Technology_Research_Program/B1848-Microbial_Sequencing/Raw_Data/bioseq/RefDB/prokaryote/bacteria/Staphylococcus_aureus_subsp._aureus_Mu50_263/Staphylococcus_aureus_subsp._aureus_Mu50_263_whole_genome.fna.gz ==> Staphylococcus_aureus_subsp
+function getBasenameShort {
+	
+	local FILENAME=${1}
+	local FILE=$( getFilename ${FILENAME} )
+	local EXTENSION_LONG=$( getExtensionLong ${FILE} )
+	echo ${FILE%.${EXTENSION_LONG}} # deletes shortest match of '.${EXTENSION_LONG}' from back of $string.
+
+}
+
+## Output the file basename, after the last slash and before the last dot
+## example: getBasenameLong /home/titi/sample1.fastq.gz => sample1.fastq
+## example: getBasenameLong /home/titi/sample1.fastq.gz.gz => sample1.fastq.gz
+## example: getBasenameLong /home/titi/sample1.fastq => sample1
+## example: getBasenameLong sample1.fastq => sample1
+## example: getBasenameLong sample1.fastq.gz => sample1.fastq
+## example: getBasenameLong /toto/titi/tata/ => tata
+## example: getBasenameLong /toto/titi/tata => tata
+## example: getBasenameLong ./output/2011_06_16_19_34_40/30-Mapping/20-Reference_genomes/Staphylococcus_aureus_subsp._aureus_Mu50_263_2/10-Mapped_reads/tmp_bwa/1.GAC.454Reads.fq ==> 1.GAC.454Reads
+function getBasenameLong {
+	
+	local FILENAME=${1}
+	local FILE=$( getFilename ${FILENAME} )
+	local EXTENSION_SHORT=$( getExtensionShort ${FILE} )
+	echo ${FILE%.${EXTENSION_SHORT}} # deletes shortest match of '.${EXTENSION_SHORT}' from back of $string.
+
+}
+## Output the number of reads in a fastq file
+#  INFILE: input file name in fastq format
+## example : fqsize  sample1.fastq => 3000000
+function fqsize {
+ 
+  local FILENAME=${1}
+
+  if [ -e ${FILENAME} ] ; then echo $(( $( wc -l ${1} | sed 's/ .*//g' ) / 4 )) ; else echo "0" ; fi
+
+}
+
+
+fqsize_jsub(){ #CREATE A FILE CONTAINING NUMBER OF LINES
+	local FILENAME=${1}
+	local OUTPUT=${2}
+	if [[ -e ${FILENAME} ]] ; then
+		jsub -b -sync -o ${OUTPUT}/count_reads.tmp wc -l ${FILENAME}
+	else
+		echo "0" > ${OUTPUT}/count_reads.tmp
+	fi
+}
+
+print_fqsize_jsub() {
+	local OUTPUT=${1}
+	LINES=$( cut -f 1 -d " " ${OUTPUT}/count_reads.tmp )
+	READS=$((LINES/4))
+	echo $READS
+	rm ${OUTPUT}/count_reads.tmp
+}	
+
+## Timer for a command line execution
+## OUTPUT the time in a [$min:$sec] format
+## STIME: the starting time in seconds
+## example : Starting timer STIME=$SECONDS;
+## example : echo -n "$(gettime $STIME)   Reading file  ..." ;
+## example : echo "Total running time: $(gettime $STIME)"
+function gettime {
+ 
+  T=$(( $SECONDS - ${1} ))
+  SEC=$(( ${T} % 60 )); 
+  MIN=$(( ${T} / 60 ));
+ 
+  if [ ${SEC} -lt 10 ] ; then SEC="0${SEC}" ; fi
+  if [ ${MIN} -lt 10 ] ; then MIN="0${MIN}" ; fi
+
+  echo "[${MIN}:${SEC}]"
+
+}
+
+# Function to get the age of a file in seconds
+## example: file=toto
+## echo The age of toto is $(age toto) seconds.
+## if [[ $(age toto) -gt 20 ]] ; then echo the file is older than 20 seconds ; fi
+#
+function getFileAge {
+  
+   local FILENAME=${1}
+   local CHANGED=`stat -c %Y "${FILENAME}"`
+   local NOW=`date +%s`
+   local ELAPSED
+   let ELAPSED=NOW-CHANGED
+   echo ${ELAPSED}
+}
+
+# IDENTIFY PAIRS SEPARATOR 
+whichPairsSeparator(){
+	
+	# COUNTING BYTES ON FIRST LINE
+	BYTES=$( head -1 ${1} | wc -c )
+	
+	if [[ ! ${BYTES} -eq $( head -1 ${1} | cut -d" " -f1 | wc -c ) ]] ; then 
+		PAIR_SEPARATOR='" "'
+	elif [[ ! ${BYTES} -eq $( head -1 ${1} | cut -d"/" -f1 | wc -c ) ]] ; then 
+		PAIR_SEPARATOR="/"
+	fi
+
+}

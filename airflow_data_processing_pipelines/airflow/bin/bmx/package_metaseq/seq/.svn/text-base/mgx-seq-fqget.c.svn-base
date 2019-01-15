@@ -1,0 +1,238 @@
+/*
+ *  mgx-fastqxtract.c
+ *
+ *  $Author: lepriolc $, $Date: 2012/02/07 17:19:34 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+ /**
+ * \file mgx-fastqxtract.c
+ * \brief This program reads a fastq file and outputs some basic statistics
+ * \author Jean-Baptiste Veyrieras
+ * \version 1.0
+ * \date November 1 2011
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_list.h>
+#include <gdl/gdl_hash.h>
+
+#include "mixgenomix.h"
+#include "gzutil.h"
+#include <ext/kseq/kseq.h>
+KSEQ_INIT(gzFile, gzread);
+
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-fastqxtract";
+
+static int help_flag = 0;
+static int verbose_flag = 0;
+static int getid_flag  = 0;
+static int fasta_flag  = 0;
+static int space_in_name_flag = 0; // if the read names contains space, use this option : the name of the read will be the concatenation of the seq->s and the seq->comment in the kseq api
+static gdl_string * INPUT     = NULL;  // name of the input Fastq file
+static gdl_string * READID    = NULL;  // file providing the read ids
+
+static struct option long_options[] = {
+/* These options set a flag. */
+{ "help", no_argument, &help_flag, 1 },
+{ "verbose", no_argument, &verbose_flag, 1 },
+{ "brief", no_argument, &verbose_flag, 2 },
+{ "getid", no_argument, &getid_flag, 1 },
+{ "fasta", no_argument, &fasta_flag, 1 },
+{ "space-in-name", no_argument, &space_in_name_flag, 1 },
+/* These options don't set a flag.
+ We distinguish them by their indices. */
+{ "input", required_argument, 0, 'i' },
+{ "read-id", required_argument, 0, 'r' },
+{ 0, 0, 0, 0 } };
+
+static int parse_argument(int argc, char *argv[]) {
+	int c;
+	while (1) {
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+		c = getopt_long(argc, argv, "i:r:", long_options, &option_index);
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+		switch (c) {
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf("option %s", long_options[option_index].name);
+			if (optarg)
+				printf(" with arg %s", optarg);
+			printf("\n");
+			break;
+		case 'i':
+			INPUT = gdl_string_clone(optarg);
+			break;
+		case 'r':
+			READID = gdl_string_clone(optarg);
+			break;
+		case '?':
+			GDL_ERROR_VAL("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+/**
+ * \fn static int check_argument(void)
+ * \brief This function checks the main function arguments.
+ * \return a success indicator
+ */
+static int check_argument(void) {
+	if (INPUT == 0) {
+		GDL_ERROR_VAL("No input fastq file provided", GDL_FAILURE, 1);
+	}
+	return GDL_SUCCESS;
+}
+
+/**
+ * \fn static int help(void)
+ * \brief This function prints the help
+ */
+static int help(void) {
+	print_header(PROGRAM);
+	printf("\n");
+	printf("--help\tDisplay a brief help on program usage\n");
+	printf("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf("\n");
+	printf("--getid\tExtract read identifier from a fastq file\n");
+	printf("--fasta\tSequence file is in fasta format\n");
+	printf("\n");
+	printf("--input or -i\tAn input fastq file\n");
+	printf("--read-id or -r\tA file providing the read identifiers to extract\n");
+}
+
+static gdl_hashtable *
+getreadid (const gdl_string * file)
+{
+   size_t i, j, n;
+   gdl_string * line = 0;
+   mgxFILE * fh;
+   gdl_hashtable * seqid_table = gdl_hashtable_alloc (gdl_hash_default, 0);
+
+   if (gdl_isfile (file))
+    {
+	    // Read the sequence identifiers
+	    if (verbose_flag)
+	    {
+		    fprintf(stderr, "[mgx-fastqxtract] get the read identifiers to extract from\n         %s\n", file);
+	    }
+	    fh = mgx_fileopen(file, "r", mgx_getzipmode (file));
+	    while(mgx_getline (&line, &n, fh)!=-1)
+	    {
+		    //i=j=0;
+		    //gdl_string * seqid = gdl_string_next_token (line, n, &i, &j); // do not allow for space in the identifier
+		    gdl_hashtable_add (seqid_table, line, line, 0);
+			//gdl_string_free (seqid);
+		    GDL_FREE (line);
+		    line=0;
+	    }
+	    mgx_fileclose (file, fh);
+    }
+    return seqid_table;
+
+}
+
+int main(int argc, char *argv[])
+{
+	int status;
+	parse_argument(argc, argv);
+	if (help_flag) {
+		exit(help());
+	}
+
+	status = check_argument();
+	if (status == GDL_SUCCESS) 
+        {
+	   gzFile fp;
+	   kseq_t *seq;
+           gdl_hashtable * read2out = 0;
+
+	   fp = gzopen(INPUT, "r");
+	   seq = kseq_init(fp);
+
+           if (!getid_flag)
+           {
+              read2out = getreadid (READID);
+           }
+		
+	   while (kseq_read(seq) >= 0)
+	   { 
+		if (space_in_name_flag)
+		{
+		
+	   gdl_string * name_comment = gdl_string_alloc(strlen(seq->name.s) + 1 + strlen(seq->name.s));
+	   strcpy(name_comment,seq->name.s);
+   	   strcat(name_comment," ");
+	   strcat(name_comment,seq->comment.s);
+	   //printf("name_comment: %s\n",name_comment);
+	   free(seq->name.s);
+	   seq->name.s = name_comment;
+	   }
+              if (getid_flag)
+              {
+                 printf ("%s\n", seq->name.s); 
+              }
+              else if (read2out && gdl_hashtable_lookup (read2out, seq->name.s))
+              {
+                 if (fasta_flag) {
+                    size_t i,j,n,k=60;
+                    gdl_string * seq_buff;
+                      
+                    printf (">%s\n", seq->name.s);
+                    n=strlen(seq->seq.s);
+                    if (n > k) {
+                       seq_buff = gdl_string_alloc (k);
+                       for(i=j=0;i<n/k;i++,j+=k) { 
+                          memcpy(seq_buff, seq->seq.s+j, sizeof(char)*k);
+                          printf("%s\n", seq_buff);
+                       }
+                       if (j < n) {
+                          printf("%s\n", seq->seq.s+j);
+                       }
+                       gdl_string_free (seq_buff);
+                    } else {
+                       printf("%s\n", seq->seq.s);     
+                    }
+                 } else {
+                    printf ("@%s\n", seq->name.s);
+	            printf ("%s\n", seq->seq.s);
+		    if (seq->qual.l)
+		    {
+		      printf ("+\n");
+		      printf ("%s\n", seq->qual.s);
+		    }
+                 } 
+	       }
+           }
+	   kseq_destroy(seq);
+	   gzclose(fp);
+      }
+	  
+      exit(0);
+}

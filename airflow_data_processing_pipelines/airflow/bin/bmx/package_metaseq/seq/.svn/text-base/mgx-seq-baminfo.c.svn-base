@@ -1,0 +1,224 @@
+/*
+ *  mgx-seq-bams2pos.c
+ *
+ *  $Author: tournoum $, $Date: 2011/12/01 09:24:13 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+/**
+ * \file mgx-seq-baminfo.c
+ * \brief Given a file with theoretical positions of hits for each simulated read, this program checks if among the best hits,
+ * the correct hit (ie. correct reference name, correct position, correct strand)  is included.
+ * \author Maud Tournoud
+ * \version 1.1
+ * \date 2013 10
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_list.h>
+#include <gdl/gdl_hash.h>
+
+// mixgenomix headers
+#include <ext/bam/sam.h>
+#include <utils/gzutil.h>
+
+#include "mixgenomix.h"
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-seq-baminfo";
+
+static int help_flag = 0;
+static int verbose_flag = 0;
+static int unique_name_flag = 0;
+static gdl_string * INPUT = NULL; // name of the input file with path of the BAM files to reads
+static gdl_string * OUTPUT = NULL; // name of the file to save the gi of the hits
+
+static struct option long_options[] = {
+/* These options set a flag. */
+{ "help", no_argument, &help_flag, 1 },
+{ "verbose", no_argument, &verbose_flag, 1 },
+{ "unique_name", no_argument, &unique_name_flag, 1 },
+/* These options don't set a flag.
+ We distinguish them by their indices. */
+{ "output", required_argument, 0, 'o' },
+{ "input", required_argument, 0, 'i' },
+{ 0, 0, 0, 0 } };
+/**
+ * \fn static int parse_argument(int argc, char *argv[])
+ * \brief This function parses the function arguments.
+ *
+ * \param argc
+ * \param argv
+ * \return a success indicator
+ */
+static int parse_argument(int argc, char *argv[]) {
+	int c;
+	while (1) {
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+		c = getopt_long(argc, argv, "i:o:", long_options, &option_index);
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+		switch (c) {
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf("option %s", long_options[option_index].name);
+			if (optarg)
+				printf(" with arg %s", optarg);
+			printf("\n");
+			break;
+		case 'i':
+			INPUT = gdl_string_clone(optarg);
+			break;
+		case 'o':
+			OUTPUT = gdl_string_clone(optarg);
+			break;
+		case '?':
+			GDL_ERROR_VAL("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+/**
+ * \fn static int check_argument(void)
+ * \brief This function checks the main function arguments.
+ * \return a success indicator
+ */
+static int check_argument(void) {
+	if (INPUT == 0) {
+		GDL_ERROR_VAL("No input file provided", GDL_FAILURE, 1);
+	}
+	
+	return GDL_SUCCESS;
+}
+
+/**
+ * \fn static int help(void)
+ * \brief This function prints the help
+ */
+static int help(void) {
+	print_header(PROGRAM);
+	printf("\n");
+	printf("--help\tDisplay a brief help on program usage\n");
+	printf(
+			"--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf("\n");
+	printf(
+			"--input or -i\tA file with the paths of the BAM files to parse and merge; BAM files MUST BE SORTED (use samtools merge -n) in the same order of the read names (option -r)\n");
+	printf("\n");
+	printf(
+			"--output or -o\tA file to save the best hits; 2 columns : column 1 = name of the reads, column 2 = among the hits, there is 1 hit corresponding to the simulated read. separated by ';'\n");
+	printf("\n");
+	
+}
+
+
+/**
+ * \fn int main(int argc, char *argv[])
+ * \brief Main functions. Retrieve the gi of the best hits for an alignment obtained with bwa
+
+ * \param argc
+ * \param argv
+ * \return a success indicator
+ */
+int main(int argc, char *argv[]) {
+	int status;
+	parse_argument(argc, argv);
+	if (help_flag) {
+		exit(help());
+	}
+
+	status = check_argument();
+
+	if (status == GDL_SUCCESS) {
+		
+		bamFile bamStream = 0 ;
+		bam1_t * bamAlign = 0 ;
+		bam_header_t * bamHeader = 0 ;
+		FILE * streamOutputFile = 0;
+		gdl_string * previousReadName = 0 ;
+		size_t read_name_length = 0;
+		// opening BAM file ;
+		bamStream = bam_open(INPUT, "r");
+		// reading the header
+		bamHeader = bam_header_read(bamStream);
+		// initializing the pointer on the alignment
+		bamAlign = bam_init1();
+		
+		// opening the output file to save the results
+		if (OUTPUT != 0) {
+			streamOutputFile = gdl_fileopen(OUTPUT, "w");
+		}
+		//streamOutputFile = gdl_fileopen(OUTPUT, "w");
+		
+		if (unique_name_flag == 1) {
+			previousReadName = gdl_string_alloc(1);
+			previousReadName[0]='y';
+		}
+		
+		while (bam_read1(bamStream, bamAlign) >= 0) {
+			// writing read name
+			if( unique_name_flag == 0) {
+				if (OUTPUT != 0) {
+					fprintf(streamOutputFile,"%s\n",bamAlign->data);
+				} 
+				else {
+					printf("%s\n",bamAlign->data);
+				}
+			}
+			else {
+				read_name_length = strlen(bamAlign->data);
+				//printf("previous: %s\n",previousReadName);
+				//printf("read: %s\n",bamAlign->data);
+				if( strncmp(previousReadName, bamAlign->data, read_name_length) != 0 ) {
+					//printf("writing\n");
+					if (OUTPUT != 0) {
+						fprintf(streamOutputFile,"%s\n",bamAlign->data);
+					} 
+					else {
+						printf("%s\n",bamAlign->data);
+					}
+					gdl_string_free(previousReadName);
+					previousReadName = gdl_string_alloc(read_name_length);
+					strncpy(previousReadName, bamAlign->data, read_name_length);
+				}
+			}
+			
+			// here it is possible to add options to write other interesting informations from the bam file !!! attention aux \n  et a l'option unique_name_flag
+			
+			
+			
+					
+		}
+		
+		bam_close(bamStream);
+		bam_header_destroy(bamHeader);
+		if (OUTPUT != 0) {
+			gdl_fileclose(OUTPUT, streamOutputFile);
+		}
+	}
+	exit(0);
+}

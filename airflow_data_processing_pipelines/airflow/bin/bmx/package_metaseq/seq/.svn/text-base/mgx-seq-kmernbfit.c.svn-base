@@ -1,0 +1,402 @@
+/*
+ *  header.c
+ *
+ *  $Author: mahep $, $Date: 2011/09/06 17:25:37 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+
+// mixgenomix headers
+#include "mixgenomix.h"
+#include "kmer.h"
+#include <taxo/taxo.h>
+
+#include "header.c"
+
+static gdl_string * PROGRAM = "mgx-kmernbfit";
+
+static int help_flag    = 0;
+static int verbose_flag = 0;
+static int debug_flag = 0;
+
+static gdl_string * INPUT  = NULL;
+static gdl_string * TAXIDS  = NULL;
+static gdl_string * OUTPUT = NULL;
+static size_t model = 0;
+static double smoothing = 0;
+
+static struct option long_options[] =
+{
+		/* These options set a flag. */
+		{"help", no_argument,          &help_flag, 1},
+		{"verbose", no_argument,       &verbose_flag, 1},
+		{"debug", no_argument,         &debug_flag, 1},
+		{"brief",   no_argument,       &verbose_flag, 0},
+		/* These options don't set a flag.
+         We distinguish them by their indices. */
+		{"input",   required_argument, 0, 'i'},
+		{"taxids",   required_argument, 0, 't'},
+		{"output",   required_argument, 0, 'o'},
+		{"model",   required_argument, 0, 'm'},
+		{"smooth",   required_argument, 0, 's'},
+		{0, 0, 0, 0}
+};
+
+static int
+parse_argument (int argc, char *argv[])
+{
+	int c;
+
+	while (1)
+	{
+
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+
+		c = getopt_long (argc, argv, "i:t:o:m:s:",
+				long_options, &option_index);
+
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+
+		switch (c)
+		{
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf ("option %s", long_options[option_index].name);
+			if (optarg)
+				printf (" with arg %s", optarg);
+			printf ("\n");
+			break;
+		case 'o':
+			OUTPUT = gdl_string_clone (optarg);
+			break;
+		case 'i':
+			INPUT = gdl_string_clone (optarg);
+			break;
+		case 't':
+			TAXIDS = gdl_string_clone (optarg);
+			break;
+		case 'm':
+			model = atoi(optarg);
+			break;
+		case 's':
+			smoothing = atof (optarg);
+			break;
+		case '?':
+			GDL_ERROR_VAL ("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL ("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+static int
+check_argument (void)
+{
+
+	if (INPUT == 0)
+	{
+		GDL_ERROR_VAL ("No input file provided",
+				GDL_FAILURE,
+				1);
+	}
+	if (OUTPUT == 0)
+	{
+		GDL_ERROR_VAL ("No output directory provided",
+				GDL_FAILURE,
+				1);
+	}
+	if (TAXIDS == 0)
+	{
+		GDL_ERROR_VAL ("No taxids provided",
+				GDL_FAILURE,
+				1);
+	}
+
+	return GDL_SUCCESS;
+}
+
+static int
+help (void)
+{
+	print_header (PROGRAM);
+	printf ("\n");
+	printf ("--help\tDisplay a brief help on program usage\n");
+	printf ("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf ("--debug\tMore detailed output message (e.g, for debugging purposes)\n");
+	printf ("\n");
+	printf ("--input or -i\t input file (libsvm format)\n");
+	printf ("--taxids or -t\t associated taxids\n");
+	printf ("--output or -o\t output file \n");
+	printf ("[--model or -m\t likelihood model : 0 = multinomial (default) ; 1 = binomial]\n");
+	printf ("[--smooth or -s\t smoothing parameter (default 0)]\n");
+}
+
+
+
+int
+main (int argc, char *argv[])
+{
+
+	int status;
+
+	parse_argument (argc, argv);
+
+	if (help_flag)
+	{
+		exit (help());
+	}
+
+	if(debug_flag)
+	{
+		verbose_flag = 1;
+	}
+
+	status = check_argument ();
+
+	if (status == GDL_SUCCESS)
+	{
+		FILE * stream;
+		gdl_list      * taxids;
+    		size_t i,j,n, nprofiles;
+    		gdl_string *line = 0;
+        	gdl_string * tx = 0;
+    		gdl_hashtable *taxid_to_ind;
+		mgx_kmerdb * kmerdb;
+		unsigned int * index; 
+		double *count;
+
+        	// read list of taxids //
+		//---------------------//
+		stream = gdl_fileopen (TAXIDS, "r");
+	    	taxids  = gdl_list_alloc (gdl_list_default);
+		taxid_to_ind = gdl_hashtable_alloc (gdl_interface_uint, 0);
+	    	while(gdl_getline (&line, &n, stream)!=-1)
+	    	{
+	    		i=j=0;
+	    		tx = gdl_string_next_token (line, n, &i, &j);
+			// store taxid in a list
+		    	gdl_list_push_back (taxids, tx, 0);
+			// check index
+	    		index = (unsigned int *) gdl_hashtable_lookup (taxid_to_ind, tx);
+			// add entry to taxid2ind if necessary
+			if(index == 0){
+				index = GDL_CALLOC (unsigned int, 1);
+				*index = (unsigned int) (gdl_hashtable_size(taxid_to_ind) + 1);
+				gdl_hashtable_add(taxid_to_ind, tx, index, 1);			
+			}
+			// free memory	
+		    	gdl_string_free (line);
+		    	line=0;
+		}
+		gdl_fileclose (TAXIDS, stream);
+	    	if(verbose_flag){
+	    		printf("\n--> list of taxids successfully read\n");
+			printf("\t- number of taxids read = %d\n", gdl_list_size(taxids));
+			printf("\t- number of unique taxa = %d\n", gdl_hashtable_size(taxid_to_ind));
+	    	}
+
+		// initialize kmer db //
+		//--------------------//
+		// allocate memory
+		kmerdb = mgx_kmerdb_alloc(gdl_hashtable_size(taxid_to_ind));	
+		// define profile ids 
+		gdl_hashtable_itr * hash_itr = gdl_hashtable_iterator(taxid_to_ind);
+		unsigned int * val = 0;
+		do {
+			val = (unsigned int *) gdl_hashtable_iterator_value(hash_itr);
+			if(debug_flag){
+				printf("\t\ttaxid : %s --> index = %d\n", gdl_hashtable_iterator_key(hash_itr),*val);
+			}
+			kmerdb->profile_ids[*val-1] = atoi(gdl_hashtable_iterator_key(hash_itr));
+		} while (gdl_hashtable_iterator_next(hash_itr));
+		gdl_hashtable_iterator_free(hash_itr);
+
+		if(debug_flag){		
+			for(i = 0; i < kmerdb->size; i++){
+				printf("position %d = taxid %d\n", i, kmerdb->profile_ids[i]);
+			}
+		}
+		// initialize kmer profiles
+		for(i = 0; i < kmerdb->size; i++){
+			kmerdb->profiles[i] = mgx_kmerprofile_alloc(0,0);
+		}
+
+		if(verbose_flag){
+			printf("--> initialization kmerdb ok\n");
+		}
+
+		// process each sequence //
+		// ---------------------//
+		stream = gdl_fileopen (INPUT, "r");
+		size_t cptr, ntok, ntok2;
+    		gdl_string ** toks, ** toks2;
+		time_t start, end;	
+		double diff;
+		// process each sequence
+		cptr = 0;
+		time(&start);	
+		while(gdl_getline (&line, &n, stream)!=-1)
+   		{
+			// log message
+			if(cptr > 0 & cptr % 1000 == 0){
+				if(verbose_flag){
+					time(&end);
+					diff = difftime (end,start);
+					printf("\t- processing sequence no %d\n", cptr);
+					printf("\t\t--> last loop took %.2lf seconds\n", diff);
+					time(&start);
+                                }
+                        }
+			// get taxid
+	    		index = (unsigned int *) gdl_hashtable_lookup (taxid_to_ind, gdl_list_get(taxids,cptr) );
+		        // increment profile->nseq
+			kmerdb->profiles[*index-1]->nseq++;
+			// extract fields
+			ntok = 0;
+			toks = gdl_string_split(line, " ", &ntok);
+			// process each field
+			for(i = 0; i < ntok ; i++){
+				// split into index / value
+				ntok2 = 0;
+				toks2 = gdl_string_split(toks[i], ":", &ntok2);
+				if(ntok2 != 2){
+					GDL_ERROR_VAL ("feature field not made of 2 entries", GDL_FAILURE,1);
+				}
+
+				// chek value found in profile counts
+		    		count = (double *) gdl_hashtable_lookup (kmerdb->profiles[*index-1]->counts, toks2[0]);
+				// add entry to taxid2ind if necessary
+				if(count == 0){
+					count = GDL_CALLOC (double, 1);
+					if(model == 0){
+						*count = (double) (atof(toks2[1]));
+					}else{
+						*count = 1;
+					}
+					gdl_hashtable_add(kmerdb->profiles[*index-1]->counts, toks2[0], count, 1);
+					// increment profile->nkmer
+					kmerdb->profiles[*index-1]->nkmer++;
+				}else{
+					if(model == 0){
+						*count = (double) (*count + atof(toks2[1]));
+					}else{
+						*count = *count + 1;
+					}
+				}
+				// increment total count of kmers
+				if(model == 0){
+					kmerdb->profiles[*index-1]->totCounts += atof(toks2[1]);
+				}else{
+					kmerdb->profiles[*index-1]->totCounts += 1;
+				}
+				// free tokens
+				GDL_MATRIX_FREE(toks2, ntok2);
+			}		
+			// free tokens
+			GDL_MATRIX_FREE(toks, ntok);
+			// free line
+			gdl_string_free (line);
+			line=0;
+			// increment counter
+			cptr++;
+		}
+		gdl_fileclose (INPUT, stream);
+		if(verbose_flag){
+			printf("--> building kmerdb ok\n");
+		}
+	
+
+		// fit NB //
+		//--------//
+		// count the number of sequences
+		mgx_kmerdb_count_sequences(kmerdb);
+		// count the number of distinct kmer
+		mgx_kmerdb_count_kmers(kmerdb);
+		// fit model
+		mgx_kmerdb_fit_nb(kmerdb, smoothing, model);	
+		if(verbose_flag){
+			printf("--> fit NB model ok\n");
+			if(debug_flag){
+				printf("\t kmerdb->nseq = %d, kmerdb->nkmer = %d\n", kmerdb->nseq, kmerdb->nkmer);
+			}
+		}
+
+
+		// DEBUG : print kmer profiles //
+		//----------------------------//
+		double * val2 = 0;
+		if(debug_flag){
+			for(i = 0; i < kmerdb->size; i++){
+				printf("\n\n*** printing profile no %d (id = %d, nseq = %d, nkmer = %d, totCounts = %d, prior prob = %f)\n", i, kmerdb->profile_ids[i], kmerdb->profiles[i]->nseq, kmerdb->profiles[i]->nkmer, kmerdb->profiles[i]->totCounts, kmerdb->profile_probs[i]); 
+        	        	gdl_hashtable_itr * hash_itr = gdl_hashtable_iterator(kmerdb->profiles[i]->counts);
+				do {
+               		         	val2 = (double *) gdl_hashtable_iterator_value(hash_itr);
+                	                printf("\tfeature id : %s ; count = %f\n", gdl_hashtable_iterator_key(hash_itr),*val2);
+                		} while (gdl_hashtable_iterator_next(hash_itr));
+               			 gdl_hashtable_iterator_free(hash_itr);
+			}
+		}
+
+		// write in output file //
+		//----------------------//
+		stream = gdl_fileopen (OUTPUT, "w");
+		mgx_kmerdb_fwrite(stream, kmerdb);
+		gdl_fileclose (OUTPUT, stream);
+		if(verbose_flag){
+			printf("--> NB model written in file %s\n", OUTPUT);
+		}
+
+
+		//--------------DEBUG : read back kmerdb ------------------
+		/*
+		mgx_kmerdb * kmerdb_new;
+		stream = gdl_fileopen (OUTPUT, "r");
+		kmerdb_new = mgx_kmerdb_fread(stream);
+  		gdl_fileclose (OUTPUT, stream);
+		printf("\n--> NB model read back from file %s\n", OUTPUT);
+		printf("\t- size = %d ; nseq = %d ; nkmer = %d, smoothing = %f\n",  kmerdb_new->size,  kmerdb_new->nseq,  kmerdb_new->nkmer, kmerdb_new->smoothing);
+		if(debug_flag){
+			for(i = 0; i < kmerdb_new->size; i++){
+				printf("\n\n*** printing profile no %d (id = %d, nseq = %d, nkmer = %d, totCounts = %d, prior prob = %f)\n", i, kmerdb_new->profile_ids[i], kmerdb_new->profiles[i]->nseq, kmerdb_new->profiles[i]->nkmer, kmerdb_new->profiles[i]->totCounts, kmerdb_new->profile_probs[i]); 
+        	        	gdl_hashtable_itr * hash_itr = gdl_hashtable_iterator(kmerdb_new->profiles[i]->counts);
+				do {
+               		         	val2 = (double *) gdl_hashtable_iterator_value(hash_itr);
+                	                printf("\tfeature id : %s ; count = %f\n", gdl_hashtable_iterator_key(hash_itr),*val2);
+                		} while (gdl_hashtable_iterator_next(hash_itr));
+               			 gdl_hashtable_iterator_free(hash_itr);
+			}
+		}
+		mgx_kmerdb_free(kmerdb_new);
+		*/
+		//---------------------------------------------
+			
+
+	      	// free objects //
+		// -------------//
+		gdl_list_free(taxids);
+		gdl_hashtable_free(taxid_to_ind);
+		mgx_kmerdb_free(kmerdb);		
+	}
+	exit (0);
+}
+

@@ -1,0 +1,221 @@
+/*
+ *  header.c
+ *
+ *  $Author: veyriejb $, $Date: 2011/09/06 17:25:37 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <time.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_io.h>
+#include <gdl/gdl_igdb_genome.h>
+
+#include "mixgenomix.h"
+#include "gzutil.h"
+#include <ext/kseq/kseq.h>
+KSEQ_INIT(gzFile, gzread);
+
+#include "header.c"
+
+static gdl_string * PROGRAM = "mgx-kmertab";
+
+static int help_flag    = 0;
+static int verbose_flag = 0;
+static int by_seq_flag = 0;
+
+static gdl_string * INPUT  = NULL;
+static gdl_string * OUTPUT = NULL;
+static size_t K = 4;
+
+static struct option long_options[] =
+{
+		/* These options set a flag. */
+		{"help", no_argument,          &help_flag, 1},
+		{"verbose", no_argument,       &verbose_flag, 1},
+		{"brief",   no_argument,       &verbose_flag, 0},
+		{"by-seq",   no_argument,       &by_seq_flag, 1},
+		/* These options don't set a flag.
+      We distinguish them by their indices. */
+		{"output",   required_argument, 0, 'o'},
+		{"input",   required_argument, 0, 'i'},
+		{"size",   required_argument, 0, 'k'},
+		{0, 0, 0, 0}
+};
+
+static int
+parse_argument (int argc, char *argv[])
+{
+	int c;
+
+	while (1)
+	{
+
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+
+		c = getopt_long (argc, argv, "i:o:k:",
+				long_options, &option_index);
+
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+
+		switch (c)
+		{
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf ("option %s", long_options[option_index].name);
+			if (optarg)
+				printf (" with arg %s", optarg);
+			printf ("\n");
+			break;
+
+		case 'i':
+			INPUT = gdl_string_clone (optarg);
+			break;
+		case 'o':
+			OUTPUT = gdl_string_clone (optarg);
+			break;
+		case 'k':
+			K = (size_t)atol(optarg);
+			break;
+		case '?':
+			GDL_ERROR_VAL ("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL ("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+static int
+check_argument (void)
+{
+
+	if (INPUT == 0)
+	{
+		GDL_ERROR_VAL ("No input file provided",
+				GDL_FAILURE,
+				1);
+	}
+	if (OUTPUT == 0)
+	{
+		GDL_ERROR_VAL ("No output file provided",
+				GDL_FAILURE,
+				1);
+	}
+	if (K > 12)
+	{
+		GDL_ERROR_VAL ("K is out of range: values must be within [1; 12]",
+				GDL_FAILURE,
+				1);
+	}
+	return GDL_SUCCESS;
+}
+
+static int
+help (void)
+{
+	print_header (PROGRAM);
+	printf ("\n");
+	printf ("--help\tDisplay a brief help on program usage\n");
+	printf ("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf ("\n");
+	printf ("--input or -i\tA fasta or fastq file (can be gzipped)\n");
+	printf ("--output or -o\tThe output file\n");
+	printf ("--size or -k\tk-mer size, between 1 and 12\n");
+}
+
+static void
+write_table (gdl_hashtable * table, FILE * stream, const gdl_string * prefix)
+{
+	gdl_hashtable_itr * table_itr = gdl_hashtable_iterator (table);
+	do
+	{
+		const gdl_string * kmer  = gdl_hashtable_iterator_key (table_itr);
+		const size_t     * count = gdl_hashtable_iterator_value (table_itr);
+		if (prefix) {
+			fprintf (stream, "%s\t", prefix);
+		}
+		fprintf (stream, "%s\t%ld\n", kmer, *count);
+		fflush (stream);
+	} while (gdl_hashtable_iterator_next (table_itr));
+	gdl_hashtable_iterator_free (table_itr);
+}
+
+int
+main (int argc, char *argv[])
+{
+	int status;
+
+	parse_argument (argc, argv);
+
+	if (help_flag)
+	{
+		exit (help());
+	}
+
+	status = check_argument ();
+
+	if (status == GDL_SUCCESS)
+	{
+		FILE * stream;
+		size_t i, *count;
+		gdl_string        * kmer = gdl_string_alloc (K);
+		gdl_hashtable     * table;
+		gdl_hashtable_itr * table_itr;
+		gzFile fp;
+		kseq_t *seq;
+
+		stream = gdl_fileopen (OUTPUT, "w");
+		if (!by_seq_flag) table = gdl_hashtable_alloc (gdl_interface_uint, 1<<K);
+
+		fp = gzopen(INPUT, "r");
+		seq = kseq_init(fp);
+
+		while (kseq_read(seq) >= 0)
+		{
+			if (by_seq_flag) table = gdl_hashtable_alloc (gdl_interface_uint, 1<<K);
+			for(i = 0; i <= seq->seq.l-K ; i++) {
+				strncpy (kmer, seq->seq.s+i, K);
+				if ((count=gdl_hashtable_lookup (table, kmer))==0) {
+					count=GDL_CALLOC (size_t, 1);
+					gdl_hashtable_add (table, kmer, count, 1);
+				}
+				(*count)++;
+			}
+			if (by_seq_flag) {
+				write_table (table, stream, seq->name.s);
+				gdl_hashtable_free (table);
+			}
+		}
+		kseq_destroy(seq);
+		gzclose(fp);
+		if (!by_seq_flag) {
+			write_table (table, stream, NULL);
+		}
+		gdl_fileclose (OUTPUT, stream);
+		// free objects
+		gdl_string_free(kmer);
+		gdl_hashtable_free(table);
+		gdl_string_free(INPUT);
+		gdl_string_free(OUTPUT);
+	}
+
+	exit (0);
+}

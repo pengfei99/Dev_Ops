@@ -1,0 +1,31 @@
+2012-02-02  Nicolas Joly  <njoly@pasteur.fr>
+
+	* First stable (1.0) version.
+
+2012-01-26  Nicolas Joly  <njoly@pasteur.fr>
+
+	* src/fqextract.c: Add missing `-x' option to usage.
+
+2011-11-29  Nicolas Joly  <njoly@pasteur.fr>
+
+	* src/fqextract.c: Be robust against fastq files which have quality
+	lines starting with '@' character.
+	* test/fqextract.sh: Exercize it.
+
+2011-02-08  Nicolas Joly  <njoly@pasteur.fr>
+
+	* src/fqextract.*: Add support for -x option, which exclude
+	entries from list (extract all except list entries).
+	* test/fqextract.sh: Exercize it.
+
+2010-12-13  Nicolas Joly  <njoly@pasteur.fr>
+
+	* configure.ac, src/fqextract.c, src/seqlist.[ch]: Get rid of
+	Berkley DB 1.85 stuff to store/retrieve sequence id, which was a
+	real pain under some circumstances ... and use dedicated code
+	instead which is much more efficient.
+
+2010-11-03  Nicolas Joly  <njoly@pasteur.fr>
+
+	* First beta (0.99) version.
+

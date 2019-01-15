@@ -1,0 +1,571 @@
+/*
+ *  header.c
+ *
+ *  $Author: mahep $, $Date: 2012/10/02 17:25:37 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <time.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_sort_uint.h>
+#include <gdl/gdl_io.h>
+#include <gdl/gdl_hash.h>
+
+#include "mixgenomix.h"
+
+#include "gzutil.h"
+#include <ext/kseq/kseq.h>
+KSEQ_INIT(gzFile, gzread);
+
+#include "header.c"
+
+//google sparse hashtable API
+//#include <ext/sparsehash/include/sparsehash/sparse_hash_map>
+//#include <ext/sparsehash/include/sparsehash/dense_hash_map>
+static gdl_string * PROGRAM = "mgx-fa2libsvm";
+
+static int help_flag    = 0;
+static int verbose_flag = 0;
+static int debug_flag = 0;
+static int frozen_flag = 0;
+static int norm_flag = 0;
+static int iupac_flag = 0;
+static int start_flag = 0;
+static int end_flag = 0;
+static int rev_flag = 0;
+static int both_flag = 0;
+static int do_forward = 1;
+static int do_reverse = 0;
+
+static gdl_string * INPUT = NULL;
+static gdl_string * HASH = NULL;
+static gdl_string * OUTPUT = NULL;
+static gdl_string * SIZE = NULL;
+static gdl_string * DICO = NULL;
+static size_t N  = 0;
+static int START = 0;
+static int END = 0;
+
+static struct option long_options[] =
+{
+		/* These options set a flag. */
+		{"help", no_argument,          &help_flag, 1},
+		{"verbose", no_argument,       &verbose_flag, 1},
+		{"debug", no_argument,         &debug_flag, 1},
+		{"brief",   no_argument,       &verbose_flag, 0},
+		{"frozen",   no_argument,      &frozen_flag, 1},
+		{"norm",   no_argument,        &norm_flag, 1},
+		{"iupac",   no_argument,        &iupac_flag, 1},
+                {"rev",   no_argument,        &rev_flag, 1},
+                {"both",   no_argument,        &both_flag, 1},
+
+	/* These options don't set a flag.
+         We distinguish them by their indices. */
+		{"input",   required_argument, 0, 'i'},
+		{"output",   required_argument, 0, 'o'},
+		{"hash",   required_argument, 0, 'h'},
+		{"size",   required_argument, 0, 'k'},
+		{"dico",   required_argument, 0, 'd'},
+		{"start",   required_argument, 0, 's'},
+		{"end",   required_argument, 0, 'e'},
+		{0, 0, 0, 0}
+};
+
+static int
+parse_argument (int argc, char *argv[])
+{
+	int c;
+
+	while (1)
+	{
+
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+
+		c = getopt_long (argc, argv, "i:o:h:k:d:s:e:",
+				long_options, &option_index);
+
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+
+		switch (c)
+		{
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf ("option %s", long_options[option_index].name);
+			if (optarg)
+				printf (" with arg %s", optarg);
+			printf ("\n");
+			break;
+		case 'i':
+			INPUT = gdl_string_clone (optarg);
+			break;
+		case 'h':
+			HASH = gdl_string_clone (optarg);
+			break;
+		case 'd':
+			DICO = gdl_string_clone (optarg);
+			break;
+		case 'o':
+			OUTPUT = gdl_string_clone (optarg);
+			break;
+		case 'k':
+			SIZE = gdl_string_clone (optarg);
+			break;
+        	case 's':
+			   START = atoi(optarg);
+			   start_flag = 1;
+			   break;
+        	case 'e':
+			   END = atoi(optarg);
+			   end_flag = 1;
+			   break;
+		case '?':
+			GDL_ERROR_VAL ("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL ("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+static int
+check_argument (void)
+{
+	if (INPUT == 0)
+	{
+		GDL_ERROR_VAL ("No input file provided",
+				GDL_FAILURE,
+				1);
+	}
+	if (HASH == 0)
+	{
+		GDL_ERROR_VAL ("No hash-table file provided",
+				GDL_FAILURE,
+				1);
+	}
+	if (OUTPUT == 0)
+	{
+		GDL_ERROR_VAL ("No output file provided",
+				GDL_FAILURE,
+				1);
+	}
+	if (SIZE == 0)
+	{
+		GDL_ERROR_VAL ("No kmer size(s) file provided",
+				GDL_FAILURE,
+				1);
+	}
+
+	if (frozen_flag && DICO)
+	{
+		GDL_ERROR_VAL ("dico option not available in frozen mode",
+				GDL_FAILURE,
+				1);
+	}
+	return GDL_SUCCESS;
+}
+
+static int
+help (void)
+{
+	print_header (PROGRAM);
+	printf ("\n");
+	printf ("--help\tkmerize sequences from a fasta file and output a libsvm/svm-light compliant output file\n");
+	printf ("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf ("--debug\tMore detailed output message (e.g, for debugging purposes)\n");
+	printf ("\n");
+	printf ("--input or -i\t input read file (fasta format)\n");
+	printf ("--output or -o\t output file (libsvm format)\n");
+        printf ("--size or -k\t kmer length (can use several values separated by , or range separated by -)\n");
+	printf ("--hash or -h\t hash-table file \n");
+	printf ("[--frozen flag specifying to rely on a pre-defined hash-table]\n");
+	printf ("[--norm flag specifying to (L2) normalize feature vectors]\n");
+	printf ("[--dico or -d\t two-column hash-table file]\n");
+	printf("     (not available in frozen mode)\n");
+	printf("[--iupac \t flag specifying to consider all IUPAC symbols]\n");
+	printf("     (default : count ATCG symbols only)\n");
+	printf("[--start or -s\t starting point in the sequence (default = 0)]\n");
+	printf("[--end or -e\t ending point in the sequence (default = length of the sequence)]\n");
+	printf("[--rev flag specifying to kmerize the reverse-transcribed sequence] \n");
+	printf("[--both flag specifying to kmerize both strands (forward + rt)] \n");
+}
+
+
+
+
+
+gdl_string * reverse_transcribe(gdl_string * s){
+        // initialize result
+        gdl_string * res;
+        res = gdl_string_alloc(strlen(s));
+        // process sequence
+        size_t i;
+        for (i = 0; i < strlen(s); i++){
+                // reverse
+                res[i] = s[strlen(s)-i-1];
+                // transcribe
+                switch(res[i]){
+                        case 'A' : res[i] = 'T'; break;
+                        case 'T' : res[i] = 'A'; break;
+                        case 'G' : res[i] = 'C'; break;
+                        case 'C' : res[i] = 'G'; break;
+                        default : break;
+                }
+        }
+        // return
+        return(res);
+}
+
+
+
+int
+main (int argc, char *argv[])
+{
+
+	int status;
+
+	parse_argument (argc, argv);
+
+	if (help_flag)
+	{
+		exit (help());
+	}
+
+	if(debug_flag)
+	{
+		verbose_flag = 1;
+	}
+
+	status = check_argument ();
+
+
+	if (status == GDL_SUCCESS)
+	{
+
+		gzFile f;
+		kseq_t *seq;
+		FILE * stream;
+		size_t cptr, i;
+		size_t *count;
+		gdl_string        * kmer;
+    		gdl_hashtable *kmer_to_id, *table;
+		time_t start, end;
+		double diff;
+		size_t *kmer_sizes;
+		size_t n_kmer_sizes;
+		size_t kmer_start;
+		size_t kmer_end;
+
+		// process forward / reverse flags //
+		//---------------------------------//
+		if(rev_flag){
+			do_forward = 0;
+			do_reverse = 1;
+			if(verbose_flag){
+				printf("**** kmerizing RT strand ****\n");
+			}
+		}
+		if(both_flag){
+			do_forward = 1;
+			do_reverse = 1;
+                        if(verbose_flag){
+                                printf("**** kmerizing both strands (forward + rt) ****\n");
+                        }
+		}
+
+		//---------------------//
+		// initialize I/O data //
+		//---------------------//
+		// open input file
+		f = gzopen(INPUT, "r");
+		seq = kseq_init(f);
+    		// read predefined hash-table if necessary
+  		if(frozen_flag){
+  			kmer_to_id = gdl_hashtable_alloc (gdl_interface_uint, 0);
+  			stream = gdl_fileopen (HASH, "r");
+  			gdl_hashtable_fread(stream, kmer_to_id);
+  			gdl_fileclose (HASH, stream);
+  			if(verbose_flag){
+  				printf("\n--> kmer-to-id hash table successfully read\n");
+  				printf("\t- number of entries = %d\n", gdl_hashtable_size(kmer_to_id));
+  			}
+  		}else{
+  			kmer_to_id = gdl_hashtable_alloc (gdl_interface_uint, 0);
+  		}
+		// open output file
+  		stream = gdl_fileopen (OUTPUT, "w");
+
+  		// parse sizes to consider
+  	    gdl_string ** toks;
+  	    size_t ntok, n1, n2, ntok2;
+		toks = gdl_string_split(SIZE, ",", &ntok); // search for list of values
+		if(ntok == 1){
+			toks = gdl_string_split(SIZE, "-", &ntok); // search for range of values
+			if(ntok == 1){
+				n_kmer_sizes = 1;
+				kmer_sizes = GDL_CALLOC(size_t, n_kmer_sizes);
+				kmer_sizes[0] = atoi(SIZE);
+			}else{
+				if(ntok != 2){
+					GDL_ERROR_VAL ("problem reading kmer sizes",GDL_FAILURE,1);
+				}
+				n1 = atoi(toks[0]);
+				n2 = atoi(toks[1]);
+				if(n1 >= n2){
+					GDL_ERROR_VAL ("problem reading kmer sizes",GDL_FAILURE,1);
+				}
+				n_kmer_sizes = n2-n1+1;
+				kmer_sizes = GDL_CALLOC(size_t, n_kmer_sizes);
+				for(i = 0; i < n_kmer_sizes; i++){
+					kmer_sizes[i] = n1 + i;
+				}
+			}
+		}else{
+			n_kmer_sizes = ntok;
+			kmer_sizes = GDL_CALLOC(size_t, n_kmer_sizes);
+			for(i = 0; i < n_kmer_sizes; i++){
+				kmer_sizes[i] = atoi(toks[i]);
+			}
+		}
+		if(verbose_flag){
+			printf("** considering %d sizes of kmers : \n", n_kmer_sizes);
+			for(i = 0; i < n_kmer_sizes; i++){
+				printf("\t- size no %d = %d\n", i, kmer_sizes[i]);
+			}
+		}
+
+
+		//-----------------------//
+  		// process each sequence //
+  		//----------------------//
+		cptr = 0;
+		size_t void_cptr = 0;		
+		time(&start);
+		while (kseq_read(seq) >= 0)
+		{
+			// log message //
+			// ------------//
+			cptr++;
+                        if(cptr > 0 & cptr % 1000 == 0){
+                        //if(cptr > 0 & cptr % 1 == 0){
+				if(verbose_flag){
+					time(&end);
+					diff = difftime (end,start);
+					printf("\t- processing sequence no %d (length = %d)\n", cptr, seq->seq.l);
+					printf("\t\t--> last loop took %.2lf seconds\n", diff);
+					time(&start);
+					//printf("\-seq = %s\n", seq->seq.s);
+				}
+			}
+
+			// kmer-ize sequence //
+			//------------------//
+			table = gdl_hashtable_alloc (gdl_interface_uint, 1<<kmer_sizes[n_kmer_sizes]);
+	  		size_t K = 1;
+	  		size_t k, s;
+			for(k = 0; k < n_kmer_sizes; k++){
+				K = kmer_sizes[k];
+				// define starting and ending points 
+				kmer_start = 0;
+				if(start_flag && START < seq->seq.l-K-1){
+					kmer_start = START;
+				}
+				kmer_end = seq->seq.l-K;
+				if(end_flag && END < seq->seq.l-K){
+					kmer_end = END;
+				}
+				//printf("*** sequence length = %d , K = %d, start = %d, end = %d****\n", seq->seq.l, K, kmer_start, kmer_end);
+
+				// count kmers
+				for(i = kmer_start; i <= kmer_end; i++) {
+					// extract kmer
+					kmer = 0;
+					kmer = gdl_string_alloc (K);
+					strncpy (kmer, seq->seq.s+i, K);
+					// convert to upper case
+					for(s = 0; s < strlen(kmer); s++){
+						kmer[s] = toupper(kmer[s]);
+					}
+					// add to hash table
+					if(do_forward){
+						if ((count=gdl_hashtable_lookup (table, kmer)) == 0) {
+							count = GDL_CALLOC (size_t, 1);
+							gdl_hashtable_add (table, kmer, count, 1);
+						}
+						(*count)++;
+					}
+					if(do_reverse){
+						gdl_string *rt_kmer;
+						rt_kmer = reverse_transcribe(kmer);
+                                                if ((count=gdl_hashtable_lookup (table, rt_kmer)) == 0) {
+                                                        count = GDL_CALLOC (size_t, 1);
+                                                        gdl_hashtable_add (table, rt_kmer, count, 1);
+                                                }
+                                                (*count)++;
+						gdl_string_free(rt_kmer);
+					}
+					gdl_string_free(kmer);
+				}
+				// log message
+				if(debug_flag){
+					printf("\t\t-found %d distinct kmers\n", gdl_hashtable_size(table));
+				}
+			}
+			// build vector of counts //
+			//------------------------//
+			// initialize vector
+			unsigned int *feat_ind;
+			size_t *feat_val;
+			feat_ind = GDL_MALLOC(unsigned int, gdl_hashtable_size(table));
+			feat_val = GDL_MALLOC(size_t, gdl_hashtable_size(table));
+			size_t nfeats = 0;
+			size_t norm2 = 0;
+			// process each kmer
+			gdl_hashtable_itr * hash_itr = gdl_hashtable_iterator(table);
+			unsigned int * index;
+			kmer = 0;
+			size_t n = 0;
+			size_t to_add = 0;
+			i = 0;
+			do {
+				// extract k-mer sequence and count
+				i++;
+				kmer = gdl_hashtable_iterator_key(hash_itr);
+				n = *(int *)gdl_hashtable_iterator_value(hash_itr);
+				if(debug_flag){
+					printf("\t\t- processing kmer no %d : seq = %s (length = %d) - count = %d\n", i, kmer, strlen(kmer), n);
+				}
+				// extract corresponding index in kmer-db
+		    		index = (unsigned int *) gdl_hashtable_lookup (kmer_to_id, kmer);
+		    		// add entry to vector if necessary
+		    		if(index == 0){
+						if(!frozen_flag){
+							// check for presence of other than ATGC
+							to_add = 1;
+							if(!iupac_flag){
+								for(s = 0; s < strlen(kmer); s++){
+									switch(kmer[s]){
+										case 'A' : break;
+										case 'T' : break;
+										case 'G' : break;
+										case 'C' : break;
+										default :
+											to_add = 0;
+											break;
+									}
+								}
+							}
+							// add kmer to the hash table
+							if(to_add){
+								index = GDL_CALLOC (unsigned int, 1);
+								*index = (unsigned int) (gdl_hashtable_size(kmer_to_id) + 1);
+								gdl_hashtable_add(kmer_to_id, kmer, index, 1);
+								// add feature value to the list
+								feat_ind[nfeats] = *index;
+								feat_val[nfeats] = n;
+								nfeats++;
+								norm2 += n*n;
+							}
+						}
+		    		}else{
+		    			// add feature value to the list
+					feat_ind[nfeats] = *index;
+					feat_val[nfeats] = n;
+					nfeats++;
+					norm2 += n*n;
+		    		}
+			} while (gdl_hashtable_iterator_next(hash_itr));
+			gdl_hashtable_iterator_free (hash_itr);
+
+
+			// sort vector of indices
+			size_t * idx_sort;
+			idx_sort = GDL_CALLOC (size_t, nfeats);
+			gdl_sort_uint_index (idx_sort, feat_ind, 1, nfeats);
+
+			// write in output file
+			if(nfeats == 0){
+				// if no features found (usually NNNNNN) write virtual feature
+				fprintf(stream, "%d:1\n", gdl_hashtable_size(kmer_to_id)+1);
+				void_cptr++;
+			}else{
+				if(norm_flag){
+					fprintf(stream, "%d:%.5f", feat_ind[idx_sort[0]], (float)feat_val[idx_sort[0]]/sqrt((float)norm2));
+				}else{
+					fprintf(stream, "%d:%d", feat_ind[idx_sort[0]], feat_val[idx_sort[0]]);
+				}
+				for(i = 1; i < nfeats; i++){
+					if(norm_flag){
+						fprintf(stream, " %d:%.5f", feat_ind[idx_sort[i]], (float)feat_val[idx_sort[i]]/sqrt((float)norm2));
+					}else{
+						fprintf(stream, " %d:%d", feat_ind[idx_sort[i]], feat_val[idx_sort[i]]);
+					}
+				}
+				fprintf(stream, "\n");
+			}
+
+			// free
+	       		gdl_hashtable_free(table);
+			GDL_FREE(feat_ind);
+			GDL_FREE(feat_val);
+			GDL_FREE(idx_sort);
+		}
+		// output number of "void" sequences encountered
+		if(void_cptr > 0){
+			printf("\n************************************************\n");
+			printf("**** WARNING : found %d 'void' sequences ****\n", void_cptr); 
+			printf("************************************************\n");
+		}
+
+		//-------------------//
+		// process I/O files //
+		//-------------------//
+		// close input file
+		kseq_destroy(seq);
+		gzclose(f);
+		// close output file
+		gdl_fileclose (OUTPUT, stream);
+		// write hash-table if necessary
+		if(!frozen_flag){
+			stream = gdl_fileopen (HASH, "w");
+			gdl_hashtable_fwrite(stream, kmer_to_id);
+			gdl_fileclose (HASH, stream);
+			if(verbose_flag){
+				printf("\n--> kmer hash-table written in file %s\n", HASH);
+			}
+			if(DICO){
+				stream = gdl_fileopen(DICO, "w");
+				gdl_hashtable_itr * hash_itr = gdl_hashtable_iterator(kmer_to_id);
+				int * val = 0;
+				do {
+					val = (int *) gdl_hashtable_iterator_value(hash_itr);
+					fprintf(stream, "%s\t%d\n", gdl_hashtable_iterator_key(hash_itr),*val);
+				} while (gdl_hashtable_iterator_next(hash_itr));
+				gdl_hashtable_iterator_free(hash_itr);
+				gdl_fileclose (DICO, stream);
+			}
+		}
+		// free hash table
+       	gdl_hashtable_free(kmer_to_id);
+	}
+
+	exit (0);
+}

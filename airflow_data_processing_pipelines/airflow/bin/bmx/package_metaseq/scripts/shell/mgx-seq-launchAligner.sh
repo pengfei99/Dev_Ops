@@ -1,0 +1,410 @@
+#! /bin/bash
+
+echo -e "\nBEGIN LAUNCH ALIGNER\n"
+
+#=======================================================================================================
+#
+# STARTING TIMER
+#
+#=======================================================================================================
+
+LAUNCH_ALIGNER_TIME=${SECONDS}
+
+#=======================================================================================================
+#
+# LOAD BASH FUNCTIONS
+#
+#=======================================================================================================
+
+source bash_functions.lib
+
+#=======================================================================================================
+#
+# Get the program arguments
+#
+#=======================================================================================================
+
+##Path to the reference DB
+REF_DB=${1}
+
+##reads file basename without the extension (first pair of reads in case of paired-reads)
+READS_BASENAME=${2}
+
+##Path to the input directory, where the reads are stored
+INPUT_DIR=${3}
+
+##Path to the output directory
+OUTPUT_DIR=${4}
+
+##Step number
+STEP_NUMBER=${5}
+
+##Sequential (1) vs. parallel (0)
+SEQUENTIAL=${6}
+
+##convert to BAM, sort, and delete SAM (1) or keek as SAM file (0)
+COMPRESS_SORT_DELETE=${7}
+
+##Name of the aligner
+ALIGNER=${8}
+
+##Paired data (1) vs. unpaired (0)
+PAIRED=${9}
+
+## PAIRS SEPARATOR for paired data (eg. "/" for Illumina data)
+PAIR_SEPARATOR=${10}
+
+## Clean intermediate files (1)
+CLEANING=${11}
+
+## Verbose (1)
+VERBOSE=${12}
+
+## Threads numbers
+THREADS=${13}
+
+## MAPPER OPTION
+MAPPER_OPTION=${14}
+
+## samtools_bmx SORT OPTION
+SAM_SORT_LEXICO=${15}
+
+## SGE MODE 0:DISABLE
+SGE=${16}
+
+## GENERATE FASTQ 1:True 0:false
+FASTQ_OUT=${17}
+
+##second pair reads file basename without the extension (second pair of reads in case of paired-reads)
+READS_BASENAME_PAIR2=${18}
+
+## MAPPER OPTION 2
+MAPPER_OPTION_2=${19} ## for bwa paired usage
+
+#########################################################################################################################################################
+
+echo -e "Path to the reference DB : ${REF_DB}"
+echo -e "reads file basename without the extension (first pair of reads in case of paired-reads) : ${READS_BASENAME}"
+echo -e "Path to the input directory, where the reads are stored : ${INPUT_DIR}"
+echo -e "Path to the output directory : ${OUTPUT_DIR}"
+echo -e "Step number : ${STEP_NUMBER}"
+echo -e "Sequential (1) vs. parallel (0) : ${SEQUENTIAL}"
+echo -e "convert to BAM, sort, and delete SAM (1) or keek as SAM file (0) : ${COMPRESS_SORT_DELETE}"
+echo -e "Name of the aligner : ${ALIGNER}"
+echo -e "Paired data (1) vs. unpaired (0) : ${PAIRED}"
+echo -e "Pair separator for paired-end reads : ${PAIR_SEPARATOR} (don't panic, the PAIR_SEPARATOR variable is re-defined in mgx-seq-launchAligner)" 
+echo -e "Clean intermediate files (1) : ${CLEANING}"
+echo -e "Verbose (1 : yes, 0 : no) : ${VERBOSE}"
+echo -e "Threads numbers : ${THREADS}"
+echo -e "MAPPER OPTION : ${MAPPER_OPTION}"
+echo -e "samtools_bmx SORT OPTION : ${SAM_SORT_LEXICO}"
+echo -e "SGE MODE : ${SGE}"
+echo -e "GENERATE FASTQ (1 for YES, 0 for NO) : ${FASTQ_OUT}"
+if [[ ${PAIRED} -eq 1 ]] ; then echo -e "Second pair reads file basename without the extension (second pair of reads in case of paired-reads) : ${READS_BASENAME_PAIR2}" ; fi
+if [[ ${PAIRED} -eq 1 ]] ; then echo -e "MAPPER OPTION 2 : ${MAPPER_OPTION_2} (for bwa paired usage)\n" ; fi
+
+#########################################################################################################################################################
+
+
+if [[ ${MAPPER_OPTION} == "NA_OPTIONS" ]] ; then MAPPER_OPTION="" ; fi
+
+if [[ ${STEP_NUMBER} -eq 1 || ${SEQUENTIAL} -eq 0 ]] ; then  ## mapper #1 or parallel mapping => use original reads file
+	
+	STEP_SUFFIX_INPUT=""
+
+else
+	
+	STEPMOINS1=$(( ${STEP_NUMBER} - 1 ))
+	STEP_SUFFIX_INPUT=step${STEPMOINS1}.*unmapped.
+
+fi
+
+STEP_SUFFIX_OUTPUT=step${STEP_NUMBER}
+
+# Run aligner
+if [ -s ${INPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_INPUT}fastq ] ; then
+	
+	
+	if [ ${VERBOSE} -eq 1 ] ; then echo "[ aligner ${ALIGNER} ]" ; fi
+
+	case ${ALIGNER} in
+		
+		bwa-sw)
+
+			CMD="bwa bwasw ${REF_DB} ${INPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_INPUT}fastq -t ${THREADS} ${MAPPER_OPTION} 1> ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.sam"
+			if [ ${VERBOSE} -eq 1 ] ; then echo ${CMD} ; fi
+			eval ${CMD}
+
+		;;
+
+		bwa-paired)
+			
+			CMD="bwa aln ${REF_DB} ${INPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_INPUT}fastq -t ${THREADS} ${MAPPER_OPTION} 1> ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.aln.sai"
+			if [ ${VERBOSE} -eq 1 ] ; then echo ${CMD} ; fi
+			eval ${CMD}
+			
+			CMD="bwa aln ${REF_DB} ${INPUT_DIR}/${READS_BASENAME_PAIR2}.${STEP_SUFFIX_INPUT}fastq -t ${THREADS} ${MAPPER_OPTION} 1> ${OUTPUT_DIR}/${READS_BASENAME_PAIR2}.${STEP_SUFFIX_OUTPUT}.aln.sai"
+			if [ ${VERBOSE} -eq 1 ] ; then echo ${CMD} ; fi
+			eval ${CMD}
+			
+			CMD="bwa sampe ${MAPPER_OPTION_2} ${REF_DB} ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.aln.sai ${OUTPUT_DIR}/${READS_BASENAME_PAIR2}.${STEP_SUFFIX_OUTPUT}.aln.sai ${INPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_INPUT}fastq ${INPUT_DIR}/${READS_BASENAME_PAIR2}.${STEP_SUFFIX_INPUT}fastq 1> ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.sam"
+			if [ ${VERBOSE} -eq 1 ] ; then echo ${CMD} ; fi
+			eval ${CMD}
+
+		;;
+
+		bwa)
+			
+			CMD="bwa aln ${REF_DB} ${INPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_INPUT}fastq -t ${THREADS} ${MAPPER_OPTION} 1> ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.aln.sai"
+			if [ ${VERBOSE} -eq 1 ] ; then echo ${CMD} ; fi
+			eval ${CMD}
+
+			CMD="bwa samse ${MAPPER_OPTION_2} ${REF_DB} ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.aln.sai ${INPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_INPUT}fastq 1> ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.sam"
+			if [ ${VERBOSE} -eq 1 ] ; then echo ${CMD} ; fi
+			eval ${CMD}
+
+		;;
+
+		bwa-mem)
+			
+			# echo -e "RefDB				: ${REF_DB}"
+			# echo -e "Input dir			: ${INPUT_DIR}"
+			# echo -e "reads basename1	: ${READS_BASENAME}"
+			# echo -e "step suffix input	: ${STEP_SUFFIX_INPUT}"
+			# echo -e "Threads			: ${THREADS}"
+			# echo -e "Mapper options		: ${MAPPER_OPTION}"
+			# echo -e "Output				: ${OUTPUT_DIR}"
+			# echo -e "step suffix output	: ${STEP_SUFFIX_OUTPUT}"
+
+			CMD="bwa mem ${REF_DB} ${INPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_INPUT}fastq -t ${THREADS} ${MAPPER_OPTION} 1> ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.sam"
+			if [ ${VERBOSE} -eq 1 ] ; then echo ${CMD} ; fi
+			eval ${CMD}
+
+		;;
+
+		bwa-mem-paired)
+
+			# echo -e "RefDB				: ${REF_DB}"
+			# echo -e "Input dir			: ${INPUT_DIR}"
+			# echo -e "reads basename1	: ${READS_BASENAME}"
+			# echo -e "step suffix input	: ${STEP_SUFFIX_INPUT}"
+			# echo -e "reads basename2	: ${READS_BASENAME_PAIR2}"
+			# echo -e "Threads			: ${THREADS}"
+			# echo -e "Mapper options		: ${MAPPER_OPTION}"
+			# echo -e "Output				: ${OUTPUT_DIR}"
+			# echo -e "step suffix output	: ${STEP_SUFFIX_OUTPUT}"
+			
+			CMD="bwa mem ${REF_DB} ${INPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_INPUT}fastq ${INPUT_DIR}/${READS_BASENAME_PAIR2}.${STEP_SUFFIX_INPUT}fastq -t ${THREADS} ${MAPPER_OPTION} 1> ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.sam"
+			if [ ${VERBOSE} -eq 1 ] ; then echo ${CMD} ; fi
+			eval ${CMD}
+
+		;;
+
+		bowtie2)
+			
+			CMD="bowtie2 --verbose -p ${THREADS} ${MAPPER_OPTION} -U ${INPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_INPUT}fastq -x ${REF_DB} -S ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.sam"
+			if [ ${VERBOSE} -eq 1 ] ; then echo ${CMD} ; fi
+			eval ${CMD}
+
+		;;
+
+		bowtie2-paired)
+			
+			CMD="bowtie2 --verbose -p ${THREADS} ${MAPPER_OPTION} -1 ${INPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_INPUT}fastq -2 ${INPUT_DIR}/${READS_BASENAME_PAIR2}.${STEP_SUFFIX_INPUT}fastq -x ${REF_DB} -S ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.sam"
+			if [ ${VERBOSE} -eq 1 ] ; then echo ${CMD} ; fi
+			eval ${CMD}
+
+		;;
+
+		tmap)
+			
+			CMD="tmap mapall -f ${REF_DB} -r ${INPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_INPUT}fastq -n ${THREADS} ${MAPPER_OPTION} 1> ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.sam"
+			if [ ${VERBOSE} -eq 1 ] ; then echo ${CMD} ; fi
+			eval ${CMD}
+
+		;;
+
+		tmap-paired)
+			
+			CMD="tmap mapall -f ${REF_DB} -r ${INPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_INPUT}fastq -r ${INPUT_DIR}/${READS_BASENAME_PAIR2}.${STEP_SUFFIX_INPUT}fastq -n ${THREADS} ${MAPPER_OPTION} 1>${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.sam"
+			if [ ${VERBOSE} -eq 1 ] ; then echo ${CMD} ; fi
+			eval ${CMD}
+
+		;;
+
+		# snap)
+
+		# 	# INDEX A PASSER EN PARAMETRE
+			
+		# 	CMD="snap single ${SNAP_INDEX} ${INPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_INPUT}fastq  ${MAPPER_OPTION} -o ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.sam"
+		# 	if [ ${VERBOSE} -eq 1 ] ; then echo ${CMD} ; fi
+		# 	eval ${CMD}
+
+		# ;;
+
+		# snap-paired)
+
+		# 	# INDEX A PASSER EN PARAMETRE
+			
+		# 	CMD="snap paired ${SNAP_INDEX} ${INPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_INPUT}fastq ${INPUT_DIR}/${READS_BASENAME_PAIR2}.${STEP_SUFFIX_INPUT}fastq  ${MAPPER_OPTION} -o ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.sam"
+		# 	if [ ${VERBOSE} -eq 1 ] ; then echo ${CMD} ; fi
+		# 	eval ${CMD}
+
+		# ;;
+
+		*)
+
+			echo "Unrecognized mapper : ${ALIGNER} => abort"
+			exit 1
+
+		;;
+
+	esac
+		
+	sleep 5
+
+	echo -e "[ mapping with ${ALIGNER} finished ! ]\n"
+
+	## Cleaning bwa-paired .sai files if necessary
+	if [ ${CLEANING} -eq 1 ] ; then
+		
+		if [ -s ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.aln.sai ] ; then rm ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.aln.sai ; fi
+		
+		if [ -s ${OUTPUT_DIR}/${READS_BASENAME_PAIR2}.${STEP_SUFFIX_OUTPUT}.aln.sai ] ; then rm ${OUTPUT_DIR}/${READS_BASENAME_PAIR2}.${STEP_SUFFIX_OUTPUT}.aln.sai ; fi
+
+	fi
+
+	if [ -s ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.sam ] ; then
+		
+		# Sort and compress
+		if [ ${COMPRESS_SORT_DELETE} -eq 1 ] ; then
+			
+			if [ ${VERBOSE} -eq 1 ] ; then echo "convert to BAM, sort, delete SAM file" ; fi
+			
+			CMD="samtools_bmx view -bh -@ ${THREADS} ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.sam -o ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.bam"	##to compress
+			if [ ${VERBOSE} -eq 1 ] ; then echo ${CMD} ; fi
+			eval ${CMD}
+			
+			if [ ${SAM_SORT_LEXICO} -eq 1 ] ; then
+				
+				CMD="samtools_bmx sort -n ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.bam -@ ${THREADS} -o ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.sorted.bam"	#to sort
+				if [ ${VERBOSE} -eq 1 ] ; then echo ${CMD} ; fi
+				eval ${CMD}
+				# echo -e "samtools_bmx sort -n DONE !"
+
+			else
+				
+				CMD="samtools_bmx sort ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.bam -@ ${THREADS} -o ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.sorted.bam"	#to sort
+				if [ ${VERBOSE} -eq 1 ] ; then echo ${CMD} ; fi
+				eval ${CMD}
+
+			fi
+
+			rm ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.sam ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.bam
+
+			## to be call by secureMetag in SGE mode without /dev/shm writing, to be sure that the output file is well written before exiting the function, we check that the age of the sorted bam file is older than 5 seconds.
+			if [[ ${SGE} -eq 1 ]]; then 
+				
+				CHECK_AGE=0
+				
+				while [ ${CHECK_AGE} -eq 0 ]; do
+					
+					SORTED_BAM_AGE=$( getFileAge ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.sorted.bam )
+					
+					if [ ${VERBOSE} -eq 1 ] ; then echo "Age of the sorted bam file: ${SORTED_BAM_AGE}" ; fi
+					
+					if [[ ${SORTED_BAM_AGE} -gt 20 ]] ; then 
+					
+						CHECK_AGE=1
+
+					fi
+
+					sleep 1
+
+				done
+			fi
+		fi
+
+		if [[ ${SAM_SORT_LEXICO} -eq 0 ]]; then
+				
+				BAM2BAI_CMD="samtools_bmx index ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.sorted.bam"
+				if [ ${VERBOSE} -eq 1 ] ; then echo ${BAM2BAI_CMD} ; fi
+				run_cmd ${BAM2BAI_CMD}
+
+		fi
+
+		# if [[ ${SGE} -eq 1 ]]; then sleep 300; fi
+		
+		# get unmapped reads and prepare fastq for next step if sequential analysis
+		if [ ${SEQUENTIAL} -eq 1 ] ; then
+			
+			if [ ${VERBOSE} -eq 1 ] ; then echo "[ aligner ${ALIGNER} ] exporting unmapped reads" ; fi
+
+			if [ ${CLEANING} -eq 1 ] ; then myR=0 ; else myR=1 ;  fi
+
+			if [[ ${COMPRESS_SORT_DELETE} -eq 1 ]]; then myExt="sorted.bam"; else myExt="sam"; fi
+			
+			if [[ ${ALIGNER} == 'tmap-paired' ]] ; then myD=0 ; else myD=1 ; fi
+					
+			if [[ ${ALIGNER} == 'bwa-sw' ]] ; then myB=1 ; else myB=0 ; fi
+			
+			if [[ $( head -n 1 ${INPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_INPUT}fastq | grep " " -c ) -eq 1 ]] ; then myN=1 ; else myN=0 ; fi
+			
+			if [[ ${ALIGNER} == 'tmap-paired' && ${myN} -eq 0 ]] ; then myD=0 ; else myD=1 ; fi
+
+			if [[ ${PAIRED} -eq 1 ]] ; then
+
+				# DEFINE PAIR_SEPARATOR VARIABLE
+				whichPairsSeparator ${INPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_INPUT}fastq 
+				echo -e "\nPair separator for unmmaped reads : ${PAIR_SEPARATOR}\n"
+			
+				if [[ ${PAIR_SEPARATOR} == " " ]] ; then
+					
+					CMD="unmapped.sh -i ${INPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_INPUT}fastq -I ${INPUT_DIR}/${READS_BASENAME_PAIR2}.${STEP_SUFFIX_INPUT}fastq -s ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.${myExt} -o ${OUTPUT_DIR} -p 1 -f ${FASTQ_OUT} -r ${myR} -d ${myD} -S " " -n ${myN}"
+					if [ ${VERBOSE} -eq 1 ] ; then echo ${CMD} ; fi
+					eval ${CMD}
+
+				else
+					
+					CMD="unmapped.sh -i ${INPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_INPUT}fastq -I ${INPUT_DIR}/${READS_BASENAME_PAIR2}.${STEP_SUFFIX_INPUT}fastq -s ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.${myExt} -o ${OUTPUT_DIR} -p 1 -f ${FASTQ_OUT} -r ${myR} -d ${myD} -S ${PAIR_SEPARATOR} -n ${myN}"
+					if [ ${VERBOSE} -eq 1 ] ; then echo ${CMD} ; fi
+					eval ${CMD}
+				fi
+
+				## renaming fastq files for subsequent analysis
+				# mv ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.sorted.mapped.pair1.fastq ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.fastq
+				# mv ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.sorted.mapped.pair2.fastq ${OUTPUT_DIR}/${READS_BASENAME_PAIR2}.${STEP_SUFFIX_OUTPUT}.fastq
+				
+			else
+				
+				CMD="unmapped.sh -i ${INPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_INPUT}fastq -s ${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.${myExt} -o ${OUTPUT_DIR} -p 0 -f ${FASTQ_OUT} -r ${myR} -b ${myB}"
+				if [ ${VERBOSE} -eq 1 ] ; then echo ${CMD} ; fi
+				eval ${CMD}
+
+			fi
+		fi	
+	else 
+		
+		echo "No reads have mapped with ${ALIGNER}"
+		echo "${OUTPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_OUTPUT}.sam is empty or does not exist"
+	
+	fi
+	
+else 
+
+	echo "No reads to map with with ${ALIGNER}"
+	echo "${INPUT_DIR}/${READS_BASENAME}.${STEP_SUFFIX_INPUT}fastq is empty or does not exist"
+
+fi
+
+#=======================================================================================================
+#
+# STOPING TIMER
+#
+#=======================================================================================================
+
+echo -e "\nTotal running time for mgx-seq-launchAligner.sh : $( gettime ${LAUNCH_ALIGNER_TIME} ) (minutes:secondes)"
+
+echo -e "\nEND LAUNCH ALIGNER\n"
+
+exit 0

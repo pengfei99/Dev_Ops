@@ -1,0 +1,217 @@
+/*
+ *  mgx-fqboot.c
+ *
+ *  $Author: veyriejb $, $Date: 2012/02/07 17:19:34 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+ /**
+ * \file mgx-fqboot.c
+ * \brief This program randomly draw reads from a given fastq file
+ * \author Jean-Baptiste Veyrieras
+ * \version 1.0
+ * \date July 2012
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_randist.h>
+#include <gdl/gdl_list.h>
+#include <gdl/gdl_hash.h>
+
+#include "mixgenomix.h"
+#include <utils/gzutil.h>
+#include <ext/kseq/kseq.h>
+KSEQ_INIT(gzFile, gzread);
+
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-fqboot";
+
+static int help_flag    = 0;
+static int verbose_flag = 0;
+
+static gdl_string * INPUT = NULL; // Name of the input Fastq/Fasta file
+static size_t N_READS     = 0;    // Number of reads
+static size_t P_READS     = 0;    // Percentage of reads
+
+static struct option long_options[] = {
+/* These options set a flag. */
+{ "help", no_argument, &help_flag, 1 },
+{ "verbose", no_argument, &verbose_flag, 1 },
+{ "brief", no_argument, &verbose_flag, 2 },
+/* These options don't set a flag.
+ We distinguish them by their indices. */
+{ "input", required_argument, 0, 'i' },
+{ "nread", required_argument, 0, 'n' },
+{ "pread", required_argument, 0, 'p' },
+{ 0, 0, 0, 0 } };
+
+static int parse_argument(int argc, char *argv[]) {
+	int c;
+	while (1) {
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+		c = getopt_long(argc, argv, "i:n:p:", long_options, &option_index);
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+		switch (c) {
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf("option %s", long_options[option_index].name);
+			if (optarg)
+				printf(" with arg %s", optarg);
+			printf("\n");
+			break;
+		case 'i':
+			INPUT = gdl_string_clone(optarg);
+			break;
+		case 'n':
+			N_READS = atol(optarg);
+			break;
+		case 'p':
+			P_READS = atol(optarg);
+			break;
+		case '?':
+			GDL_ERROR_VAL("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+/**
+ * \fn static int check_argument(void)
+ * \brief This function checks the main function arguments.
+ * \return a success indicator
+ */
+static int check_argument(void) {
+	if (INPUT == 0) {
+		GDL_ERROR_VAL("No input fastq file provided", GDL_FAILURE, 1);
+	}
+	return GDL_SUCCESS;
+}
+
+/**
+ * \fn static int help(void)
+ * \brief This function prints the help
+ */
+static int help(void) {
+	print_header(PROGRAM);
+	printf("\n");
+	printf("--help\tDisplay a brief help on program usage\n");
+	printf("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf("\n");
+	printf("--input or -i\tAn input fastq file\n");
+	printf("--nread or -n\tNumber of reads\n");
+	printf("--pread or -p\tPercentage of reads\n");
+}
+
+int main(int argc, char *argv[])
+{
+	int status;
+	parse_argument(argc, argv);
+	if (help_flag) {
+		exit(help());
+	}
+
+	status = check_argument();
+
+	if (status == GDL_SUCCESS) 
+        {
+           size_t i,n=0,*index,*which,*keep;
+	   gdl_runtime * runtime;
+	   gzFile fp;
+	   kseq_t *seq;
+
+           // Get the runtime which init
+           // the random generator
+	   runtime = runtime_setup ();
+
+           // how many reads ?
+	   fp = gzopen(INPUT, "r");
+	   seq = kseq_init(fp);
+	   while (kseq_read(seq) >= 0)
+	   {
+               n++;
+           }
+	   kseq_destroy(seq);
+	   gzclose(fp);
+           // randomy sample N_READS
+           if (N_READS > n) {
+              GDL_ERROR_VAL (gdl_string_sprintf ("Trying to sample more reads %ld than available from %s [n=%ld]\n", N_READS, n, INPUT), GDL_FAILURE, GDL_FAILURE); 
+           }
+		   if (P_READS > 0) { //If percentage is required instead of number of reads
+		      N_READS = (P_READS*n)/100;
+		   }
+           index=GDL_MALLOC(size_t, n);
+           which=GDL_MALLOC(size_t, N_READS);
+           for(i=0;i<n;i++){index[i]=i;}
+           gdl_ran_choose (runtime->rng, which, N_READS, index, n, sizeof(size_t));
+           keep=GDL_CALLOC(size_t, n);
+           for(i=0;i<N_READS;i++) {
+			  // printf("%ld ==> %ld\n", i, which[i]); check with JBV for presence in output
+              keep[which[i]]=1;
+           }
+           GDL_FREE (index);
+           GDL_FREE (which);
+           // re-open the fastq file
+	   fp  = gzopen(INPUT, "r");
+	   seq = kseq_init(fp);
+           n   = 0;
+	   while (kseq_read(seq) >= 0)
+           {
+               if (!keep[n++])
+               {
+                   continue;
+               }
+               if (seq->qual.s)
+               {
+					if (seq->comment.s)
+					{
+						printf ("@%s %s\n", seq->name.s, seq->comment.s);
+					}
+					else
+					{
+						printf ("@%s\n", seq->name.s);
+					}
+	              printf ("%s\n", seq->seq.s);
+                      printf ("+\n");
+                      printf ("%s\n", seq->qual.s);
+               } 
+               else 
+               {
+                     printf (">%s\n", seq->name.s);
+                     printf ("%s\n", seq->seq.s);
+               }
+           }
+	   kseq_destroy(seq);
+	   gzclose (fp);
+           GDL_FREE (keep);
+
+           // save runtime to record the random generator state
+           runtime_setdown (runtime);    
+      }
+
+
+      exit(0);
+}

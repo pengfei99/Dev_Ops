@@ -1,0 +1,1063 @@
+/*
+ *  mgx-seq-bams2pos.c
+ *
+ *  $Author: tournoum $, $Date: 2011/12/01 09:24:13 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+/**
+ * \file mgx-seq-bams2pos.c
+ * \brief Given a file with theoretical positions of hits for each simulated read, this program checks if among the best hits,
+ * the correct hit (ie. correct reference name, correct position, correct strand)  is included.
+ * \author Maud Tournoud
+ * \version 1.1
+ * \date 2013 10
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_list.h>
+#include <gdl/gdl_hash.h>
+
+// mixgenomix headers
+#include <ext/bam/sam.h>
+#include <utils/gzutil.h>
+
+#include "mixgenomix.h"
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-seq-bams2pos";
+
+static int help_flag = 0;
+static int verbose_flag = 0;
+static int full_hit_name_flag = 0;// if flag set to 1, do not try to parse the hit name to retrieve the gi
+static int paired_flag = 0; // if flag set to 1, means that reads are paired and that the input read files contains the position and the strand of the 2 reads in pair
+
+static gdl_string * INPUT = NULL; // name of the input file with path of the BAM files to reads
+static gdl_string * INPUT_READ_NAME_POS_STRAND = NULL; // name of the input file that contains the names of the reads, the position, and the strand. If reads are paired, 
+									// there are 2 more columns with the position and the strand of the second read in pair
+static gdl_string * OUTPUT = NULL; // name of the file to save the gi of the hits
+static gdl_string * SEPARATOR_PAIRED_READS = NULL; // separator for the paired reads names; usually "/", ie. nameOfPair/1 and nameOfPair/2
+static int ALT       = 0; // find best hits among alternative alignment
+
+static struct option long_options[] = {
+/* These options set a flag. */
+{ "help", no_argument, &help_flag, 1 },
+{ "verbose", no_argument, &verbose_flag, 1 },
+{"full-hit-name",no_argument, &full_hit_name_flag, 1},
+{"paired",no_argument, &paired_flag, 1},
+/* These options don't set a flag.
+ We distinguish them by their indices. */
+{ "output", required_argument, 0, 'o' },
+{ "input", required_argument, 0, 'i' },
+{ "read", required_argument, 0, 'r' },
+{"alt",   required_argument, 0, 'a'},
+{ "sep-pairs", required_argument, 0, 's' },
+{ 0, 0, 0, 0 } };
+/**
+ * \fn static int parse_argument(int argc, char *argv[])
+ * \brief This function parses the function arguments.
+ *
+ * \param argc
+ * \param argv
+ * \return a success indicator
+ */
+static int parse_argument(int argc, char *argv[]) {
+	int c;
+	while (1) {
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+		c = getopt_long(argc, argv, "i:o:r:a:s:", long_options, &option_index);
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+		switch (c) {
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf("option %s", long_options[option_index].name);
+			if (optarg)
+				printf(" with arg %s", optarg);
+			printf("\n");
+			break;
+		case 'i':
+			INPUT = gdl_string_clone(optarg);
+			break;
+		case 'o':
+			OUTPUT = gdl_string_clone(optarg);
+			break;
+		case 'r':
+			INPUT_READ_NAME_POS_STRAND = gdl_string_clone(optarg);
+			break;
+		case 'a':
+			ALT= (int) atoi (optarg);
+			break;
+		case 's':
+			SEPARATOR_PAIRED_READS = gdl_string_clone(optarg);
+			break;
+		case '?':
+			GDL_ERROR_VAL("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+/**
+ * \fn static int check_argument(void)
+ * \brief This function checks the main function arguments.
+ * \return a success indicator
+ */
+static int check_argument(void) {
+	if (INPUT == 0) {
+		GDL_ERROR_VAL("No input file provided", GDL_FAILURE, 1);
+	}
+	if (INPUT_READ_NAME_POS_STRAND == 0) {
+		GDL_ERROR_VAL("No input file with read names provided", GDL_FAILURE, 1);
+	}
+	if (OUTPUT == 0) {
+		GDL_ERROR_VAL("No output file provided", GDL_FAILURE, 1);
+	}
+	return GDL_SUCCESS;
+}
+
+/**
+ * \fn static int help(void)
+ * \brief This function prints the help
+ */
+static int help(void) {
+	print_header(PROGRAM);
+	printf("\n");
+	printf("--help\tDisplay a brief help on program usage\n");
+	printf(
+			"--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf("\n");
+	printf(
+			"--input or -i\tA file with the paths of the BAM files to parse and merge; BAM files MUST BE SORTED (use samtools merge -n) in the same order of the read names (option -r)\n");
+	printf("\n");
+	printf("--read or -r\tA file with the one line per read or pair of reads. Separator is ';'. The first column corresponds to the name of the read, the 2nd, the position	the 3rd the strand (0 or 1). If reads are paired, the 4th and 5th column correspond to the position and strand of the second read in pair.\n");
+	printf("\n");
+	printf(
+			"--output or -o\tA file to save the best hits; 2 columns : column 1 = name of the reads, column 2 = among the hits, there is 1 hit corresponding to the simulated read. separated by ';'\n");
+	printf("\n");
+	printf(
+			"--sep-pairs or -s\tA separators used for the pairs of reads, usually '.' or '/' \n");
+	printf("\n");
+	printf(
+			"--full-hit-name \t if this flag is used, the function does not try to parse the hit name to retrieve the gi (useful for NCBI reference genomes) \n");
+	printf("\n");
+}
+
+/**
+ * \fn static char * get_prefix(char * qname)
+ * \brief This function returns the prefix of a query read, given a pairsSeparator string
+ * \param qname name of the read to be evaluated. The format of the read name should be: "prefix[pairsSeparator]suffix"
+ * \param pairsSeparator separator used to defined the prefix.
+ * \return the prefifx of the query read
+ */
+char * get_prefix(char * qname, const gdl_string * pairsSeparator) {
+	int i;
+	size_t n = strlen(qname);
+	for (i = n - 1; i >= 0; i--) {
+		if (qname[i] == pairsSeparator[0]) {
+			break;
+		}
+	}
+	gdl_string * prefix = gdl_string_alloc(i);
+	prefix = strncpy(prefix, qname, i);
+	return prefix;
+}
+
+/**
+ * \fn static int check_name_or_prefix(const gdl_string * qname, gdl_string ** prefix, int checkPrefix, const gdl_string * pairsSeparator
+ * \brief This function checks whether the prefix of read identified by its qname and the current prefix name are the same.
+ * It can also checks whether the read name identified by qname and the current read name are equal.
+ *
+ * \param qname name of the read to be evaluated. The format of the read name should be: "prefix pairsSeparator suffix"
+ * \param prefix current prefix or entire current read name; to be compared to the prefix of the read name
+ * to the read name directly in case checkPrefix = 0
+ * \param checkPrefix:  if 1 the function will compare the prefix of qname and prefix, otherwise, it will
+ * compare qname and prefix directly.
+ * \param pairsSeparator separator used to defined the prefix.
+ * \return a success indicator. If the prefix of the qname (or qname itself) equals to the prefix, the function returns 0 and the pointer is not modified.
+ * If the predix of the read and the prefix are different, the function returns 1 else the function returns 0
+ */
+int check_name_or_prefix(const gdl_string * qname, gdl_string * prefix,
+		int checkPrefix, const gdl_string * pairsSeparator) {
+	size_t n = strlen(qname);
+	int i, j;
+
+	if (checkPrefix == 1) {
+		// Look for the first pairsSeparator starting from the end
+		for (i = n - 1; i >= 0; i--) {
+			if (qname[i] == pairsSeparator[0]) {
+				break;
+			}
+		}
+	} else
+		i = n;
+	if (prefix != 0) {
+		// compare the 2 strings: *prefix and qname up to character i
+		// a 0 value indicates that the characters compared in both strings are equal
+		if (!strncmp(prefix, qname, i) && strlen(prefix) == i) {
+			return 0;
+		} else {
+			return 1;
+		}
+	} else {
+		GDL_ERROR_VAL("check name or prefix => pointeur null", GDL_FAILURE, 1);
+	}
+}
+
+/**
+ * \fn int	parseReadNamePos(const gdl_string * line, gdl_string ** read , gdl_string ** reference, int * position1, int * strand1, int * position2, int * strand2)
+ * \brief This function the file with the theoretical positions of the reads. The file is a ; separated table. The table has 4 columns for unpaired reads
+*  and 6 columns for paired reads. The first column gives the name of the read (without suffix for paired reads), the 2nd the reference sequence, the 3rd the position, the 4th the strand (fw or rv),
+   the 5th (if paired) the position of the mate, and the 6th (if paired) the strand of the mate
+ * \param line a line of the input file
+ * \param read pointer to a string, where to put the 1nd column
+ * \param reference pointer to a string, where to put the 2nd column
+ * \param position1 pointer to a integer, where to put the 3nd column
+ * \param strand1 pointer to a integer, where to put the 4nd column (1 if fw)
+ * \param position2 pointer to a integer, where to put the 5nd column
+ * \param strand2 pointer to a integer, where to put the 6nd column (1 if fw)
+ */
+int	parseReadNamePos(const gdl_string * line, gdl_string ** read , gdl_string ** reference, int * position1, int * strand1, int * position2, int * strand2)
+{
+	//printf("entering parseReadNamePos\n");
+	
+	int currentComma = 0;
+	size_t n = strlen(line);
+	int currentPos , previousPos = 0;
+	
+	gdl_string * fieldSeparator = gdl_string_alloc(1);
+	fieldSeparator[0] = ';';
+	
+	gdl_string * forwardString = gdl_string_alloc(2);
+	forwardString[0] = 'f' ;
+	forwardString[1] = 'w' ;
+	//printf("forwardString %s \n",forwardString);
+	gdl_string * tmp = 0;
+	
+		//int nbComma = 3;
+			//printf("Line in parseRead : %s\n",line);
+			//printf("n: %d\n",n);
+	for(currentPos = 0 ; currentPos < n ; currentPos ++ )
+	{
+		//printf("currentPos : %d\n",currentPos);
+		//printf("currentPos de line : %c\n",line[currentPos]);
+		if(line[currentPos] == fieldSeparator[0])
+		{
+			//printf("currentPos :%d \n", currentPos);
+			switch (currentComma) {
+			case 0:
+					*read = gdl_string_alloc(currentPos - previousPos);
+					*read = strncpy(*read, line, currentPos);
+					//printf("read: %s \t",*read);
+					previousPos  = currentPos + 1 ;
+					currentComma ++ ;
+					break;
+			case 1:
+					*reference = gdl_string_alloc(currentPos - previousPos);
+					*reference = strncpy(*reference, line + previousPos, currentPos-previousPos);
+					//printf("reference: %s \t",*reference);
+					previousPos  = currentPos + 1 ;
+					currentComma ++ ;
+					break;
+			case 2:
+					tmp = gdl_string_alloc(currentPos - previousPos);
+					tmp = strncpy(tmp, line + previousPos, currentPos-previousPos);
+					previousPos  = currentPos + 1 ;
+					currentComma ++ ;
+					*position1= (int) atoi (tmp);
+					//printf("position %d \t", *position1);
+					gdl_string_free(tmp);
+					
+					break;
+			case 3: // only for paired reads
+					//printf("case 3 for pairs\t");
+					
+					tmp = gdl_string_alloc(currentPos - previousPos);
+					tmp = strncpy(tmp, line + previousPos, currentPos-previousPos);
+					previousPos  = currentPos + 1 ;
+					currentComma ++ ;
+					
+					if( strcmp(tmp,forwardString) ==0 ) {
+						*strand1  = 1;
+					}
+					else {
+						*strand1 = 0;
+					}
+					//printf("strand1 %d \t", *strand1);
+					gdl_string_free(tmp);
+					
+					break;
+			case 4:
+					//printf("case 4 for pairs\n");
+					tmp = gdl_string_alloc(currentPos - previousPos);
+					tmp = strncpy(tmp, line + previousPos, currentPos-previousPos);
+					previousPos  = currentPos + 1 ;
+					currentComma ++ ;
+					
+					*position2= (int) atoi (tmp);
+					//printf("position %d \t", *position2);
+					gdl_string_free(tmp);
+					break;
+			default:
+				GDL_ERROR_VAL("Error in parseReadNamePos", GDL_EINVAL, -1);
+			}
+		}
+	}
+	//printf("currentPos %d previousPos %d \n",currentPos,previousPos);
+	//printf("dealing with the last field\n");
+	// printing the last field of the csv
+	tmp = gdl_string_alloc(currentPos - previousPos);
+	tmp = strncpy(tmp, line + previousPos, currentPos-previousPos);
+	//printf("last field: %s \t",tmp);
+	//previousPos  = currentPos + 1 ;
+	//currentComma ++ ;
+	
+	// add strand1
+	if( paired_flag ==0) {
+		if( strcmp(tmp,forwardString) ==0 ) {
+			*strand1  = 1;
+		}
+		else {
+			*strand1 = 0;
+		}
+		//printf("strand1 %d \t", *strand1);
+	}
+	//add strand2
+	else{
+		//printf("paired reads");
+		if( strcmp(tmp,forwardString) ==0 ) {
+			*strand2  = 1;
+		}
+		else {
+			*strand2 = 0;
+		}
+		//printf("strand2 %d \t", *strand2);
+	}	
+	
+	gdl_string_free(tmp);
+	
+	//printf("exiting corretly the program\n");
+	gdl_string_free(fieldSeparator);
+	gdl_string_free(forwardString);
+	return 1;
+}
+
+
+/**
+ * \fn char * get_bestHitGI(const char * bestHitName, char * result)
+ * \brief This function extracts the gi from the best hit name. The bestHitName is assumed to have the following format:
+ * gi|218888746|ref|NC_011770.1|. So the gi is between the first | and the second  | .
+ *
+ * \param bestHitName bestHitName from which to extract the gi. The format of the bestHitName is: "gi|218888746|ref|NC_011770.1|".
+ * \param result pointer to the gi
+ * \return the modified pointer to the gi
+ */
+
+// we assume that the bestHitName has the following format: gi|218888746|ref|NC_011770.1|
+char * get_bestHitGI(char * bestHitName, char * result) {
+
+	if (full_hit_name_flag) {
+		result = gdl_string_alloc(strlen(bestHitName));
+		strcpy(result, bestHitName);
+		return result;
+	}
+	// look for the 2 | separators
+	int n = strlen(bestHitName);
+	int i = 0;
+	int firstSep = 0;
+	int secondSep = 0;
+	char * tmp = bestHitName;
+	int giLength = 0;
+
+	// looking for the first separator
+	for (i = 0; i < n; i++) {
+		if (bestHitName[i] == '|') {
+			break;
+		}
+	}
+	firstSep = i;
+	// sanity check
+	if (firstSep == (n - 1)) {
+		fprintf(
+				stdout,
+				"error in get_bestHitGI for bestHitName %s : cannot find first separator | \n",
+				bestHitName);
+		return (0);
+	}
+
+	// looking for the second separator
+	for (i = (firstSep + 1); i < n; i++) {
+		if (bestHitName[i] == '|') {
+			break;
+		}
+	}
+	secondSep = i;
+	// sanity check
+	if (secondSep == (n - 1)) {
+		fprintf(
+				stdout,
+				"error in get_bestHitGI for bestHitName %s : cannot find second separator | \n",
+				bestHitName);
+		return (0);
+	}
+
+	giLength = secondSep - firstSep - 1;
+	if (result != 0) {
+		GDL_FREE(result);
+	}
+	result = gdl_string_alloc(giLength);
+	tmp = bestHitName + firstSep + 1;
+	strncpy(result, tmp, giLength);
+	return result;
+}
+
+
+
+
+
+/**
+ * \fn int splitAltHit(char *alt, gdl_string * reference, int position, int strand)
+ * \brief This function checks if there is a good hit wrt to the given reference, position, and strand among the alternative hits
+ * ex of XA:Z:gi|148826757|ref|NC_009567.1|,+631000,100M,0;gi|16271976|ref|NC_000907.1|,+174225,100M,0;gi|319896422|ref|NC_014920.1|,+1903556,100M,0;gi|162960935|ref|NC_007146.2|,+236254,100M,1;
+ * \param alt alternative hits. Alternative hits are retrieved from the field XA and are separated by a ";": eg 
+ * \param reference string reference genome
+ * \param position int position on the reference genome
+ *  \param stand int strand (1 if fw)
+ * \return 1 if a correct hit has been found and 0 otherwise
+ */
+int
+splitAltHit(char *alt, gdl_string * reference, int position, int strand) {
+
+	//gdl_list * listAltGI = gdl_list_alloc(gdl_list_default); // list with the gi values for the alternative hits
+
+	
+	int i,j = 0;
+	//int ed, nbM = 0;
+	int n = strlen(alt);
+	int start = 0;
+	int start_alt = 0;
+	int commaNumber = 0;
+	int currentAltLength = 0;
+	int posNum = 0;
+	int strandNum = -1;
+	int foundCorrect = 0;
+	char* currentAlt = 0;
+	char * tmp = 0;
+	char * currentAltGI = 0;
+	char * currentAltPosition = 0;
+	gdl_string * currentStrand = 0;
+	int * currentED = 0;
+	//gdl_list_itr *itr = 0;
+	//gdl_list_itr *itr_ed = 0;
+	//gdl_list_itr *itr_gi = 0;
+
+	//printf("alt in splitAlt: %s\n",alt);
+	// extract all the alternative hits from alt; put each alternative hit in the list listAltGI and
+	// each alternative edit distance in the list listAltED
+	for (i = 0; i < n; i++) {
+		if (*(alt + i) == ';') {
+		
+			// extract alternative hit
+			currentAltLength = i - start;
+			currentAlt = gdl_string_alloc(currentAltLength);
+			tmp = alt + start;
+			currentAlt = strncpy(currentAlt, tmp, currentAltLength);
+			start = i;
+			//printf("currentAlt : %s\n",currentAlt);
+			
+			
+			// extract GI
+			
+			start_alt = 0;
+			commaNumber = 0;
+			//if (no_parse_hit_name_flag) {
+			for (j = 0; j < strlen(currentAlt); j++) {
+				if (currentAlt[j] == ',') {
+					if (commaNumber == 0) {
+						// get the reference
+						commaNumber ++;
+						start_alt = j;
+						if (full_hit_name_flag) {
+							currentAltGI = gdl_string_alloc(j - 1);
+							strncpy(currentAltGI, currentAlt + 1, j - 1); // ignore the Z suffix
+							//printf("currentAltGI : %s\n",currentAltGI);
+						}
+						else {
+							currentAltGI = get_bestHitGI(currentAlt, currentAltGI);
+							//printf("currentAltGI : %s\n",currentAltGI);
+						}
+					}
+					else if(commaNumber == 1) { 
+						// get the position
+						currentAltPosition = gdl_string_alloc( j - start_alt - 2);
+						strncpy(currentAltPosition, currentAlt + start_alt + 2, j - start_alt -2 );
+						//printf("currentAltPosition : %s\n",currentAltPosition);
+						posNum = (int) atoi (currentAltPosition);
+						GDL_FREE(currentAltPosition);
+						
+						currentStrand = gdl_string_alloc(1);
+						strncpy(currentStrand, currentAlt + start_alt + 1, 1 );
+						//printf("strand : %s\n",currentStrand);
+						// get the strand
+						if(currentStrand[0] == '+') {
+							//printf("positive strand\n");
+							strandNum = 1;
+						}
+						else {
+							//printf("negative strand\n");
+							strandNum = 0;
+						}
+						gdl_string_free(currentStrand);
+						break;
+					}
+					else {
+						GDL_ERROR_VAL("PROBLEM in splitAltHit", GDL_FAILURE, 1);
+					}
+				}
+				
+			}
+			// comparison with the reference values
+			/*
+			printf("ref comp %s\n",reference);
+			printf("currentAltGI comp %s\n",currentAltGI);
+			printf("strand comp %d\n",strand);
+			printf("strandNum comp %d\n",strandNum);
+			printf("position comp %d\n",position);
+			printf("posNum comp %d\n",posNum);
+			*/
+			if( strcmp(reference,currentAltGI) ==0 & strand == strandNum & posNum == position) {
+				foundCorrect = 1;
+				GDL_FREE(currentAltGI);
+				break;
+			}
+			else {
+				GDL_FREE(currentAltGI);
+			}
+		}
+	}
+/*
+if( foundCorrect == 1) {
+	printf("found a correct hit !!!!!!! \n");
+}	
+else {
+	printf("did not find any good hit !!!!!!!!!! \n");
+}
+*/
+	return(foundCorrect);
+}
+
+
+
+/**
+ * \fn static int pr_filtering(gdl_list * bamAlignToCompare_list,gdl_list * bamAlignOriginHeader_list, FILE * stream, int getAlt, gdl_string * reference, int position1, int strand1, int position2, int strand2)
+ * \brief This function extracts checks if the hits corresponds to the truth for each alignment. Write in the output file 2 or 3 (for paired reads) columns: column1 = name of the read
+ *  column2 = 1 if the read is correctly mapped, column3 = 1 if the mapped is correctly mapped
+
+ * \param bamAlignToCompare_list pointer to a list of bam_1t alignements which should be compared
+ *  \param bamAlignOriginHeader_list pointer to a list of header corresponding to the alignments
+ * \param stream pointer to the outputfile
+ *  \param reference string reference
+ * \param position1 int position of the read
+ * \param strand1 int position of the read
+ * \param position2 int position of the mate
+ * \param strand2 int position of the mate
+ * \return a success indicator
+ */
+
+static int pr_filtering(gdl_list * bamAlignToCompare_list,
+		gdl_list * bamAlignOriginHeader_list, FILE * stream, int getAlt,
+		gdl_string * reference, int position1, int strand1, int position2, int strand2 ) {
+	//printf("entering pr_filtering\n");
+	
+	size_t i, j, n, correctHit, correctPairHit;
+	i = 0;
+	correctHit = 0;
+	correctPairHit = 0;
+	gdl_list_itr * itr;
+	gdl_hashtable * gid_table; // hashtable with the name of the gi as index
+	bam1_t ** bamAligns; // table of  bam1_t
+	bam_header_t ** bamHeaders; // table of bam_header_t
+
+	int bestHitIdx = 0;
+	char ** bestHitName = 0;
+	char * bestHitGI = 0;
+	
+	int32_t bamStrand = -1 ;
+	int32_t is_mapped  = -1;
+	int32_t is_paired  = -1;
+	int32_t first_in_pair  = -1;
+	int32_t second_in_pair  = -1;
+	int resSplitAlt = -1;
+	
+	// Create a table of alignments
+	n = gdl_list_size(bamAlignToCompare_list);
+
+	bamAligns = GDL_MALLOC (bam1_t *, n);
+	itr = gdl_list_iterator_front(bamAlignToCompare_list);
+	// filling the table with the list values
+	do {
+		bamAligns[i++] = (bam1_t *) gdl_list_iterator_value(itr);
+	} while (gdl_list_iterator_next(itr));
+	gdl_list_iterator_free(itr);
+
+	// Create a table of header
+	if (gdl_list_size(bamAlignOriginHeader_list) != n) {
+		GDL_ERROR_VAL("pr_filtering :: Problem with lists sizes", GDL_FAILURE,
+				1);
+	}bamHeaders = GDL_MALLOC (bam_header_t *, n);
+	itr = gdl_list_iterator_front(bamAlignOriginHeader_list);
+	i = 0;
+	// filling the table with the list values
+	do {
+		bamHeaders[i++] = (bam_header_t *) gdl_list_iterator_value(itr);
+	} while (gdl_list_iterator_next(itr));
+	gdl_list_iterator_free(itr);
+
+
+
+/*	
+	for(i = 0 ; i<n ; i++)
+	{
+		printf("Read %s\n", bamAligns[i]->data);
+		printf("FUNMAP %d\n", bamAligns[i]->core.flag&BAM_FUNMAP);
+		printf("BAM_FPAIRED %d\n", bamAligns[i]->core.flag&BAM_FPAIRED);
+		printf("BAM_FREAD1 %d\n", bamAligns[i]->core.flag&BAM_FREAD1);
+		printf("BAM_FREAD2 %d\n", bamAligns[i]->core.flag&BAM_FREAD2);
+	}
+	*/
+	//printf("Read %s\t", bamAligns[0]->data);
+	i = 0;
+	correctHit = 0;
+	correctPairHit = 0;
+	if( paired_flag)
+	{
+		while ( i < n & ( correctHit == 0 | correctPairHit == 0 ) ) {
+			is_mapped = ((bamAligns[i]->core.flag&BAM_FUNMAP)==0);
+			is_paired = ((bamAligns[i]->core.flag&BAM_FPAIRED)==1);
+			//printf("is_paired : %d\n",is_paired);
+			//printf("reading alignment : %d\n",i);
+			if( is_mapped) 
+			{
+				if( ! is_paired ) {
+					GDL_ERROR_VAL("The reads should be paired and are not identified as such in the bam file", GDL_FAILURE, 1);
+				}
+				else
+				{
+					first_in_pair = ((bamAligns[i]->core.flag&BAM_FREAD1)==64);
+					second_in_pair = ((bamAligns[i]->core.flag&BAM_FREAD2)==128);
+					
+					//printf("first_in_pair : %d\n",first_in_pair);
+					//printf("second_in_pair : %d\n",second_in_pair);
+					
+					bestHitIdx = (int) ((bamAligns[i]->core).tid);
+					bestHitName = bamHeaders[i]->target_name + bestHitIdx;
+					// get the corresponding gi
+					bestHitGI = 0;
+					bestHitGI = get_bestHitGI(*bestHitName, bestHitGI);
+					//printf("Hit %d: %s\t",i,bestHitGI);
+					// get position
+					int32_t position = bamAligns[i]->core.pos + 1;
+					//printf("pos: %d ",position);
+					// get strand for the reads
+					if( bam1_strand(bamAligns[i]) != 0) {
+						bamStrand = 0;
+						//printf("strand: rv");
+					}
+					else {
+						//printf("strand: fw");
+						bamStrand = 1;
+					}
+					if ( first_in_pair) {
+						// compare with the simulated data
+						if( strcmp(reference,bestHitGI) ==0 & strand1 == bamStrand & position == position1) {
+							correctHit = 1;
+							//printf(" ==> correctHit\n");
+						}
+						else {
+							if ( getAlt == 1) {
+								char * alt = 0;
+								alt = bam_aux_get(bamAligns[i], "XA");
+								//printf("alt : %s\n", alt);
+								if( alt != 0)
+								{
+									resSplitAlt = splitAltHit(alt, reference, position1,strand1);
+									//printf("pr filtering: splitAlt : %d\n",resSplitAlt);
+									if( resSplitAlt == 1) {
+										//fprintf(stream, "%s\t1", bamAligns[0]->data);
+										correctHit = 1 ;
+									}
+									else {
+									//printf("no alternative hit found for pair1\n");
+									}
+								}
+								alt = 0;
+								//printf("exiting test alt \n");
+							}
+						}
+					}
+					else {
+						if( ! second_in_pair ) {
+							GDL_ERROR_VAL("Problem with pairs", GDL_FAILURE, 1);
+						}
+						if( strcmp(reference,bestHitGI) ==0 & strand2 == bamStrand & position == position2) {
+							correctPairHit = 1;
+							//printf(" ==> correctPair\n");
+						}
+						else {
+							if ( getAlt == 1) {
+								char * alt = 0;
+								alt = bam_aux_get(bamAligns[i], "XA");
+								//printf("alt : %s\n", alt);
+								if( alt != 0)
+								{
+									resSplitAlt = splitAltHit(alt, reference, position2,strand2);
+									//printf("pr filtering: splitAlt : %d\n",resSplitAlt);
+									if( resSplitAlt == 1) {
+										//fprintf(stream, "%s\t1", bamAligns[0]->data);
+										correctPairHit = 1 ;
+									}
+									else {
+									//printf("no alternative hit found for pair2\n");
+									}
+								}
+								alt = 0;
+								//printf("exiting test alt \n");
+							}
+						}
+					}
+				}
+			}
+			i++;
+		}
+		
+		if( correctHit == 0) {
+			fprintf(stream, "%s\t0\t", bamAligns[0]->data);
+		}
+		else {
+			fprintf(stream, "%s\t1\t", bamAligns[0]->data);
+		}
+		if( correctPairHit == 0) {
+			fprintf(stream, "0");
+		}
+		else {
+			fprintf(stream, "1");
+		}
+	}
+	else
+	{
+		while ( i < n & correctHit == 0) {
+			// check if the read is mapped
+			is_mapped = ((bamAligns[i]->core.flag&BAM_FUNMAP)==0);
+			if(is_mapped) {
+				bestHitIdx = (int) ((bamAligns[i]->core).tid);
+				bestHitName = bamHeaders[i]->target_name + bestHitIdx;
+
+				// get the corresponding gi
+				bestHitGI = 0;
+				bestHitGI = get_bestHitGI(*bestHitName, bestHitGI);
+				//printf("Hit %d: %s\t",i,bestHitGI);
+				// get position
+				int32_t position = bamAligns[i]->core.pos + 1;
+				//printf("pos: %d ",position);
+				// get strand for the reads
+				if( bam1_strand(bamAligns[i]) != 0) {
+					bamStrand = 0;
+					//printf("strand: rv\n");
+				}
+				else {
+					//printf("strand: fw\n");
+					bamStrand = 1;
+				}
+				
+				// compare with the simulated data
+				if( strcmp(reference,bestHitGI) ==0 & strand1 == bamStrand & position == position1)
+				{
+					// print in the output file that the read has been retrieved in the correct position
+					fprintf(stream, "%s\t1", bamAligns[0]->data);
+					// exit the loop
+					correctHit = 1;
+				}
+				// if uncorrect wrt reference, find among alternative hits if necessary
+				else {
+					if ( getAlt == 1) {
+						//GDL_ERROR_VAL("The reads should be paired and are not identified as such in the bam file", GDL_FAILURE, 1);
+						char * alt = 0;
+						alt = bam_aux_get(bamAligns[i], "XA");
+						//printf("alt : %s\n", alt);
+						if( alt != 0)
+						{
+							resSplitAlt = splitAltHit(alt, reference, position1,strand1);
+							//printf("pr filtering: splitAlt : %d\n",resSplitAlt);
+							if( resSplitAlt == 1) {
+								fprintf(stream, "%s\t1", bamAligns[0]->data);
+								correctHit = 1 ;
+							}
+							else {
+								//printf("no alternative hit found\n");
+							}
+						}
+						alt = 0;
+						//printf("exiting test alt \n");
+					}
+				}
+			}
+			i++;
+		}
+		// not correct hit found
+		if( i == n & correctHit == 0) {
+			//printf("Not hit found \n");
+			fprintf(stream, "%s\t0", bamAligns[0]->data);
+		}
+	}
+	
+	
+	
+	//printf("before cleaning\n");
+	// Clean alignments
+	for (i = 0; i < n; i++) {
+		bam_destroy1(bamAligns[i]);
+	}
+	GDL_FREE(bamAligns);
+	GDL_FREE(bamHeaders);
+
+	fprintf(stream, "\n");
+	//printf("after cleaning\n");
+}
+
+
+/**
+ * \fn int main(int argc, char *argv[])
+ * \brief Main functions. Retrieve the gi of the best hits for an alignment obtained with bwa
+
+ * \param argc
+ * \param argv
+ * \return a success indicator
+ */
+int main(int argc, char *argv[]) {
+	int status;
+	parse_argument(argc, argv);
+	if (help_flag) {
+		exit(help());
+	}
+
+	status = check_argument();
+
+	if (status == GDL_SUCCESS) {
+
+		int checkReadPrefix = 0;
+
+		if (SEPARATOR_PAIRED_READS == 0) {
+			// define '.' as a default separator
+			//SEPARATOR_PAIRED_READS = gdl_string_alloc(1);
+			//SEPARATOR_PAIRED_READS[0] = '.';
+			printf(
+					"No separator is defined for the reads; will compare the whole read name \n");
+		} else {
+			printf("The separator used is : %s \n", SEPARATOR_PAIRED_READS);
+			checkReadPrefix = 1;
+		}
+			
+		gdl_string * line = 0, *readName, *readNamePrefix;
+		FILE * streamReadName;
+		FILE * stream;
+		FILE * streamOutputFile;
+
+		gdl_string * reference = 0;
+		int  position1, position2, strand1, strand2 = 0;
+		gdl_list * file_list = 0;
+		gdl_list * header_list = 0;
+		gdl_list * bamFh_list = 0;
+		gdl_list * bamAlignToCompare_list = 0;
+		gdl_list * bamAlignOriginHeader_list = 0;
+		size_t i, j, n, cptr = 0, nbBAMfiles = 0;
+		int compReadName = 0;
+		gdl_string * BAMfile;
+		bam1_t * bamAlign;
+		bam_header_t * bamHeader;
+		bamFile bamStream;
+
+		gdl_string **currentNames_table = 0;
+		bam1_t ** bamAlign_table = 0;
+		bamFile * bamFH_table = 0;
+		bam_header_t ** bamHeader_table = 0;
+		int * endFile_table = 0;
+		// Open the input file that contains the list of SAM/BAM files to proceed
+		stream = gdl_fileopen(INPUT, "r");
+		// opening the output file to save the results
+		streamOutputFile = gdl_fileopen(OUTPUT, "w");
+
+		// Add the path to the files into a list
+		file_list = gdl_list_alloc(gdl_list_default);
+
+		while (gdl_getline(&line, &n, stream) != -1) {
+			i = j = 0;
+			BAMfile = gdl_string_next_token(line, n, &i, &j);
+			gdl_list_push_back(file_list, BAMfile, 0);
+		}
+
+		// opening the BAM files and put the headers into a list
+		// writing all headers
+
+		nbBAMfiles = gdl_list_size(file_list);
+
+		bamAlign_table = GDL_MALLOC (bam1_t *, nbBAMfiles);
+		bamFH_table = GDL_MALLOC(bamFile, nbBAMfiles);
+		bamHeader_table = GDL_MALLOC (bam_header_t *, nbBAMfiles);
+		endFile_table = GDL_MALLOC (int, nbBAMfiles);
+
+		for (i = 0; i < nbBAMfiles; i++) {
+			BAMfile = gdl_list_get(file_list, i);
+			// Open the file and initialize the file handler
+			bamStream = bam_open(BAMfile, "r");
+			// adding the BAM file handler to the list
+			bamFH_table[i] = bamStream;
+			printf("Opening BAM file: %s ... [OK]\n", BAMfile);
+
+			// adding the header to the list
+			bamHeader = bam_header_read(bamStream);
+			bamHeader_table[i] = bamHeader;
+
+			// initializing alignments and adding to the list
+			bamAlign = bam_init1();
+			bamAlign_table[i] = bamAlign;
+			endFile_table[i] = 0;
+		}
+
+		streamReadName = gdl_fileopen(INPUT_READ_NAME_POS_STRAND, "r");
+		// table with current alignments names
+		currentNames_table = GDL_MALLOC (gdl_string *, nbBAMfiles);
+		for (i = 0; i < nbBAMfiles; i++) {
+			bamAlign = bamAlign_table[i];
+			bamStream = bamFH_table[i];
+			bam_read1(bamStream, bamAlign);
+			currentNames_table[i] = bamAlign->data;
+		}
+
+		// reading read names
+		line = 0;
+		int cptr2 = 1;
+		while (gdl_getline(&line, &n, streamReadName) != -1) {
+			//printf("Line %d: %s \n ",cptr,line);
+			cptr = cptr + 1;
+			if (cptr % 100000 == 0)
+				printf("Number of reads: %d\n", cptr);
+			i = j = 0;
+			parseReadNamePos(line, &readName , &reference, &position1, &strand1, &position2, &strand2);
+			//printf("OK parsing read %d\n",cptr);
+			//readName = gdl_string_next_token(line, n, &i, &j);
+			//printf("readName %s\n",readName);
+			readNamePrefix = readName;
+			/*
+			if (checkReadPrefix == 1) {
+				readNamePrefix = get_prefix(readName, SEPARATOR_PAIRED_READS);
+			} else {
+				readNamePrefix = readName;
+			}
+			*/
+				//printf("readNamePrefix OK\n");
+			bamAlignToCompare_list = gdl_list_alloc(gdl_list_default);
+			bamAlignOriginHeader_list = gdl_list_alloc(gdl_list_default);
+			//printf("readNamePrefix : %s \n",readNamePrefix);
+			for (i = 0; i < nbBAMfiles; i++) {
+
+				while (check_name_or_prefix(currentNames_table[i],
+						readNamePrefix, checkReadPrefix, SEPARATOR_PAIRED_READS)
+						== 0 && endFile_table[i] == 0) {
+						//printf("currentName Alignment : %s \n",currentNames_table[i]);
+
+					gdl_list_push_back(bamAlignToCompare_list,
+							bamAlign_table[i], 0);
+					gdl_list_push_back(bamAlignOriginHeader_list,
+							bamHeader_table[i], 0);
+
+					//reading next alignment
+					bamAlign = bam_init1();
+
+					bamStream = bamFH_table[i];
+					int resRead = bam_read1(bamStream, bamAlign);
+					if (resRead == -1) {
+						printf("Reaching end of file\n");
+						endFile_table[i] = 1;
+					}
+					if (resRead == -2)
+						GDL_ERROR_VAL("check name or prefix => pointeur null",
+								GDL_FAILURE, 1);
+					if (endFile_table[i] == 0) {
+						bamAlign_table[i] = bamAlign;
+						currentNames_table[i] = (gdl_string *) bamAlign->data;
+					}
+
+				}
+			}
+
+			if (gdl_list_size(bamAlignToCompare_list) > 0) {
+				//printf("There are %d alignments to compare for read %s \n",gdl_list_size(bamAlignToCompare_list),readNamePrefix);
+				// call pr_filtering function
+				//printf("ref: %s, pos1: %d, std1 %d, pos2 %d, std2 %d  \n",reference,position1,strand1,position2,strand2);
+				pr_filtering(bamAlignToCompare_list, bamAlignOriginHeader_list,
+						streamOutputFile, ALT, reference, position1, strand1, position2, strand2);
+
+			}
+			// destroying alignment and freeing list
+			gdl_list_free(bamAlignToCompare_list);
+			gdl_list_free(bamAlignOriginHeader_list);
+			gdl_string_free(line);
+			line = 0;
+			/*
+			if (checkReadPrefix == 1) {
+				gdl_string_free(readNamePrefix);
+			} else {
+				readNamePrefix = 0;
+			}
+			*/
+			readNamePrefix = 0;
+			gdl_string_free(readName);
+			gdl_string_free(reference);
+
+		}
+
+
+		for (i = 0; i < n; i++) {
+			bam_close(bamFH_table[i]);
+			bam_header_destroy(bamHeader_table[i]);
+		}
+		GDL_FREE(currentNames_table);
+		GDL_FREE(bamAlign_table);
+		GDL_FREE(bamFH_table);
+		GDL_FREE(bamHeader_table);
+		GDL_FREE(endFile_table);
+		gdl_list_free(file_list);
+		gdl_list_free(header_list);
+		gdl_list_free(bamFh_list);
+		gdl_fileclose(INPUT, stream);
+		gdl_fileclose(OUTPUT, streamOutputFile);
+		gdl_fileclose(INPUT_READ_NAME_POS_STRAND, streamReadName);
+
+		GDL_FREE(SEPARATOR_PAIRED_READS);
+	}
+
+	exit(0);
+}

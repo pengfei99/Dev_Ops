@@ -1,0 +1,367 @@
+/*
+ *  mgx-taxostat.c
+ *
+ *  $Author: veyriejb $, $Date: 2012/05/09 17:27:00 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+#include <ctype.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_io.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_seq_io.h>
+#include <gdl/gdl_hash.h>
+
+#include "mixgenomix.h"
+#include "gzutil.h"
+#include "taxo.h"
+
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-taxostat";
+
+static int help_flag       = 0;
+static int verbose_flag    = 0;
+static int rank_flag    = 0;
+static int metasee_flag    = 0;
+
+static gdl_string * INPUT    = NULL;
+static gdl_string * TAXODB   = NULL;
+static gdl_string * OUTPUT   = NULL;
+
+static struct option long_options[] =
+ {
+   /* These options set a flag. */
+   {"help", no_argument,          &help_flag, 1},
+   {"verbose", no_argument,       &verbose_flag, 1},
+   {"brief",   no_argument,       &verbose_flag, 0},
+   {"rank",   no_argument,       &rank_flag, 1},
+   {"metasee",   no_argument,       &metasee_flag, 1},
+   /* These options don't set a flag.
+      We distinguish them by their indices. */
+   {"output",   required_argument, 0, 'o'},
+   {"input",   required_argument, 0, 'i'},
+   {"taxodb",   required_argument, 0, 't'},
+   {0, 0, 0, 0}
+ };
+
+static int
+parse_argument (int argc, char *argv[])
+{
+	int c;
+
+   while (1)
+     {
+
+       /* getopt_long stores the option index here. */
+       int option_index = 0;
+
+       c = getopt_long (argc, argv, "i:o:t:",
+                        long_options, &option_index);
+
+       /* Detect the end of the options. */
+       if (c == -1)
+         break;
+
+       switch (c)
+         {
+         case 0:
+           /* If this option set a flag, do nothing else now. */
+           if (long_options[option_index].flag != 0)
+             break;
+           printf ("option %s", long_options[option_index].name);
+           if (optarg)
+             printf (" with arg %s", optarg);
+           printf ("\n");
+           break;
+
+ 		 case 'i':
+           INPUT = gdl_string_clone (optarg);
+           break;
+         case 'o':
+           OUTPUT = gdl_string_clone (optarg);
+           break;
+         case 't':
+		   TAXODB = gdl_string_clone (optarg);
+		   break;
+         case '?':
+           GDL_ERROR_VAL ("Unknown arguments", GDL_EINVAL, -1);
+         default:
+           GDL_ERROR_VAL ("Bad arguments", GDL_EINVAL, -1);
+         }
+     }
+}
+
+static int
+check_argument (void)
+{
+
+	if (INPUT == 0)
+	{
+		GDL_ERROR_VAL ("No input file provided",
+					   GDL_FAILURE,
+					   1);
+	}
+	if (OUTPUT == 0)
+	{
+		GDL_ERROR_VAL ("No output file provided",
+					   GDL_FAILURE,
+					   1);
+	}
+	if (TAXODB == 0)
+	{
+		GDL_ERROR_VAL ("No taxonomy database file provided",
+					   GDL_FAILURE,
+					   1);
+	}
+
+	return GDL_SUCCESS;
+}
+
+
+static int
+help (void)
+{
+   print_header (PROGRAM);
+   printf ("\n");
+   printf ("--help\tDisplay a brief help on program usage\n");
+   printf ("--verbose\tOutput message on standard output to see what the program is doing\n");
+   printf ("\n");
+   printf ("--rank\tSummarize item counts per rank\n");
+   printf ("\n");
+   printf ("--metasee\tMetasee format of the output file\n");
+   printf ("\n");
+   printf ("--input or -i\tInput file\n");
+   printf ("--output or -o\tThe output file\n");
+   printf ("--taxodb or -t\tThe taxonomy database file\n");
+}
+
+static void
+pathtoroot(mgx_taxonomy * taxonomy, mgx_taxon * current, gdl_hashtable * rank_summary, size_t nitem, FILE * stream)
+{
+
+   gdl_string * taxon_name = current->names[0];
+   if (rank_summary && taxonomy->ranks) 
+   {
+       size_t * counter;
+       gdl_hashtable * rank_summary_tab=0;
+       gdl_string * rank = taxonomy->ranks->rank_names[taxonomy->ranks->rid2tx[current->index]];
+       if ((rank_summary_tab=gdl_hashtable_lookup(rank_summary, rank))==0)
+       {
+          rank_summary_tab = gdl_hashtable_alloc(gdl_hash_default, 0);
+          gdl_hashtable_add(rank_summary, rank, rank_summary_tab, 0);
+       }
+       if ((counter=gdl_hashtable_lookup(rank_summary_tab, taxon_name))==0) {
+          counter = GDL_CALLOC(size_t, 1);
+          gdl_hashtable_add(rank_summary_tab, taxon_name, counter, 0);
+       }
+       (*counter)+=nitem;
+   }
+   if (stream) 
+   {
+      fprintf(stream, "%s;", taxon_name);
+   }
+   if (current == taxonomy->root) 
+   {
+      return;
+   }
+   pathtoroot(taxonomy, current->parent, rank_summary, nitem, stream);
+}
+
+static void
+pathfromroot(mgx_taxonomy * taxonomy, mgx_taxon * current, gdl_hashtable * rank_summary, size_t nitem, FILE * stream, gdl_string * path)
+{
+	gdl_string  *temppath;
+
+   const gdl_string * taxon_name = current->names[0];
+   if (rank_summary && taxonomy->ranks) 
+   {
+       size_t * counter;
+       gdl_hashtable * rank_summary_tab=0;
+       gdl_string * rank = taxonomy->ranks->rank_names[taxonomy->ranks->rid2tx[current->index]];
+       if ((rank_summary_tab=gdl_hashtable_lookup(rank_summary, rank))==0)
+       {
+          rank_summary_tab = gdl_hashtable_alloc(gdl_hash_default, 0);
+          gdl_hashtable_add(rank_summary, rank, rank_summary_tab, 0);
+       }
+       if ((counter=gdl_hashtable_lookup(rank_summary_tab, taxon_name))==0) {
+          counter = GDL_CALLOC(size_t, 1);
+          gdl_hashtable_add(rank_summary_tab, taxon_name, counter, 0);
+       }
+       (*counter)+=nitem;
+   }
+   if (stream) 
+   {
+     if(path)
+     {
+  		temppath = gdl_string_sprintf("%s\t%s", taxon_name, path);
+     }else{
+  		temppath = gdl_string_sprintf("%s", taxon_name);
+     }
+   }
+
+   if (current == taxonomy->root) 
+   {
+    
+
+  /////////////////////////////// Only usefull for phenotypic bMx taxonomy...  
+  //     //replace spaces
+   //  size_t i, j, n, n2;
+   //  gdl_string ** temp, ** temp2;
+   //  for(i=0;i<strlen(path);i++)
+   //  {
+    // if(path[i]==' ')
+    // {
+    //  path[i]='_';
+    // }
+   //  }
+   //  //replace + or - by positive and negative
+   //  temp = gdl_string_split(path,"-",&n);
+   //  for(i=0;i<n;i++){
+    // temp2 = gdl_string_split(temp[i],"+",&n2);
+    // for (j=0; j<n2; j++)
+    // {
+    //  if(n2>1 && j < n2-1)
+    //  { 
+    //    fprintf(stream,"%spositive",temp2[j]); 
+    //  }else{
+    //    fprintf(stream,"%s",temp2[j]); 
+    //  }
+    // }
+    // if(n>1 && i<n-1)
+    // {
+    //  fprintf(stream,"negative");
+    // }
+   //  }
+
+    if (temppath == 0){
+      fprintf(stream, "root\n");
+    }else{
+      fprintf(stream, "%s\n", temppath);
+    }
+      return;
+   }
+   pathfromroot(taxonomy, current->parent, rank_summary, nitem, stream, temppath);
+	GDL_FREE(temppath);
+}
+
+
+
+
+int
+main (int argc, char *argv[])
+{
+  int status;
+
+  parse_argument (argc, argv);
+
+  if (help_flag)
+  {
+  	  exit (help());
+  }
+
+  status = check_argument ();
+
+  if (status == GDL_SUCCESS)
+  {
+	    size_t i,j,k,n,ntaxon_id,taxon_idx,nitem;
+	    gdl_string * line=0, * tok1, *tok2, *path;
+	    gdl_runtime * runtime;
+	    mgx_taxonomy * taxonomy;
+	    mgx_taxon * taxon;
+            gdl_hashtable * rank_summary = 0;
+            FILE * stream, * ostream;
+
+	    runtime = runtime_setup ();
+
+	    stream   = gdl_fileopen (TAXODB, "r");
+	    taxonomy = mgx_taxonomy_fread (stream);
+	    gdl_fileclose (TAXODB, stream);
+
+		stream  = gdl_fileopen (INPUT, "r");
+		ostream = gdl_fileopen (OUTPUT, "w");
+
+		if (rank_flag) 
+		{
+                   rank_summary = gdl_hashtable_alloc (gdl_hash_default, 0);
+		}
+		
+		while(gdl_getline (&line, &n, stream)!=-1)
+		{
+			i=j=0;
+			tok1  = gdl_string_next_token (line, n, &i, &j);
+			tok2  = gdl_string_next_token (line, n, &i, &j);
+                        nitem = (tok2) ? atol(tok2) : 1;
+			if (metasee_flag)
+			{
+				fprintf(ostream, "%ld\t",nitem);
+			}else{
+				fprintf(ostream, "%s\t", tok1);
+			}
+			fflush(ostream);
+                        if ((size_t)atol(tok1) < taxonomy->n_taxid2index) {
+			   taxon = taxonomy->taxons[taxonomy->taxid2index[(size_t)atol(tok1)]];
+							if (metasee_flag)
+							{
+								path=0;
+								pathfromroot(taxonomy, taxon, rank_summary, nitem, ostream, path);
+							}else{
+								pathtoroot(taxonomy, taxon, rank_summary, nitem, ostream);
+							}
+                        } else {
+                           fprintf(ostream, "NA");
+                        }
+			if (!metasee_flag)
+			{
+				fprintf(ostream, "\t%ld\n",nitem);
+			}
+			gdl_string_free (tok1);
+			gdl_string_free (tok2);
+			gdl_string_free (line);
+			line=0;
+		}
+		gdl_fileclose (OUTPUT, ostream);
+		gdl_fileclose (INPUT, stream);
+                if (rank_flag)
+                {
+                   gdl_hashtable_itr * rank_itr = gdl_hashtable_iterator (rank_summary);
+                   do
+                   {
+                       gdl_string * rank_name   = gdl_hashtable_iterator_key (rank_itr);
+                       gdl_hashtable * rank_tab = gdl_hashtable_iterator_value (rank_itr);
+                       gdl_hashtable_itr * rank_tab_itr = gdl_hashtable_iterator (rank_tab);
+                       do
+                       {
+                          gdl_string * taxon_name = gdl_hashtable_iterator_key (rank_tab_itr);
+                          size_t * nitem = gdl_hashtable_iterator_value (rank_tab_itr);
+                          printf("%s\t%s\t%ld\n",taxon_name,rank_name,*nitem);
+                       }
+                       while(gdl_hashtable_iterator_next (rank_tab_itr));
+                       gdl_hashtable_iterator_free (rank_tab_itr);
+                   }
+                   while(gdl_hashtable_iterator_next (rank_itr));
+                   gdl_hashtable_iterator_free (rank_itr);
+                }
+	    // Save the runtime
+	    runtime_setdown (runtime);
+  }
+
+  exit (0);
+}
+

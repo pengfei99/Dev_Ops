@@ -1,0 +1,42 @@
+LDADD = $(LIBGDL_LIBS) $(MATH_LIB) -lpthread -lz
+
+INCLUDES= $(LIBGDL_CFLAGS) -I./ -I../ -I../utils
+
+bin_PROGRAMS =  mgx-taxo-db \
+		mgx-taxo-lca \
+		mgx-taxo-gi2tax \
+		mgx-taxo-prune \
+		mgx-taxo-dot \
+		mgx-taxo-desc \
+		mgx-taxo-subset \
+		mgx-taxo-rankcut \
+		mgx-taxo-rankget \
+		mgx-taxo-distmat \
+		mgx-taxo-simple \
+		mgx-taxo-taxcmp \
+		mgx-taxo-match \
+                mgx-taxo-taxdesc \
+                mgx-taxo-stat \
+                mgx-taxo-newick \
+                mgx-taxo-getgi
+
+# RULES
+mgx_taxo_db_SOURCES        = mgx-taxo-db.c taxo.c ncbi_taxo.c simple_taxo.c ../utils/gzutil.c
+mgx_taxo_lca_SOURCES       = mgx-taxo-lca.c taxo.c ncbi_taxo.c simple_taxo.c ../utils/gzutil.c
+mgx_taxo_gi2tax_SOURCES  = mgx-taxo-gi2tax.c
+mgx_taxo_prune_SOURCES     = mgx-taxo-prune.c taxo.c ncbi_taxo.c simple_taxo.c ../utils/gzutil.c
+mgx_taxo_dot_SOURCES      = mgx-taxo-dot.c taxo.c ncbi_taxo.c simple_taxo.c ../utils/gzutil.c
+mgx_taxo_desc_SOURCES  = mgx-taxo-desc.c taxo.c ncbi_taxo.c simple_taxo.c ../utils/gzutil.c
+mgx_taxo_subset_SOURCES    = mgx-taxo-subset.c taxo.c ncbi_taxo.c simple_taxo.c ../utils/gzutil.c
+mgx_taxo_rankcut_SOURCES  = mgx-taxo-rankcut.c taxo.c ncbi_taxo.c simple_taxo.c ../utils/gzutil.c
+mgx_taxo_rankget_SOURCES  = mgx-taxo-rankget.c taxo.c ncbi_taxo.c simple_taxo.c ../utils/gzutil.c
+mgx_taxo_distmat_SOURCES  = mgx-taxo-distmat.c taxo.c ncbi_taxo.c simple_taxo.c ../utils/gzutil.c
+mgx_taxo_simple_SOURCES  = mgx-taxo-simple.c taxo.c ncbi_taxo.c simple_taxo.c ../utils/gzutil.c
+mgx_taxo_taxcmp_SOURCES  = mgx-taxo-taxcmp.c taxo.c ncbi_taxo.c simple_taxo.c ../utils/gzutil.c
+mgx_taxo_match_SOURCES   = mgx-taxo-match.c taxo.c ncbi_taxo.c simple_taxo.c ../utils/gzutil.c
+mgx_taxo_taxdesc_SOURCES = mgx-taxo-taxdesc.c taxo.c ncbi_taxo.c simple_taxo.c ../utils/gzutil.c
+mgx_taxo_stat_SOURCES    = mgx-taxo-stat.c taxo.c ncbi_taxo.c simple_taxo.c ../utils/gzutil.c
+mgx_taxo_newick_SOURCES  = mgx-taxo-newick.c taxo.c ncbi_taxo.c simple_taxo.c ../utils/gzutil.c
+mgx_taxo_getgi_SOURCES   =  mgx-taxo-getgi.c taxo.c ncbi_taxo.c simple_taxo.c ../utils/gzutil.c
+
+m4datadir = $(datadir)/aclocal

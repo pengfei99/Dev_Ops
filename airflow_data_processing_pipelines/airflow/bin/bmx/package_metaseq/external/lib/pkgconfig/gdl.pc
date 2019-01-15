@@ -1,0 +1,10 @@
+prefix=/Softs/bioinfo/GDL/
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: GDL
+Description: Genetic Data Analysis Library
+Version: 1.0
+Libs: -L${exec_prefix}/lib -lgdl 
+Cflags: -I${prefix}/include

@@ -1,0 +1,462 @@
+/*
+ *  mgx-fastqstat.c
+ *
+ *  $Author: veyriejb $, $Date: 2011/11/29 23:34:13 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+ /**
+ * \file mgx-fastqstat.c
+ * \brief This program reads a fastq file and outputs some basic statistics
+ * \author Jean-Baptiste Veyrieras
+ * \version 1.0
+ * \date November 1 2011
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_list.h>
+#include <gdl/gdl_hash.h>
+
+// mixgenomix header
+#include <utils/gzutil.h>
+#include <ext/kseq/kseq.h>
+
+#include "mixgenomix.h"
+KSEQ_INIT(gzFile, gzread);
+
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-fastq";
+
+static int help_flag = 0;
+static int verbose_flag = 0;
+static int solexa_flag  = 0;
+static int summary_flag  = 0;
+static int space_in_name_flag = 0; // if the read names contains space, use this option : the name of the read will be the concatenation of the seq->s and the seq->comment in the kseq api
+
+static gdl_string * INPUT     = NULL;  // name of the input Fastq file
+static gdl_string * OUTPUT    = NULL;  // output stem
+
+static struct option long_options[] = {
+/* These options set a flag. */
+{ "help", no_argument, &help_flag, 1 },
+{ "verbose", no_argument, &verbose_flag, 1 },
+{ "brief", no_argument, &verbose_flag, 2 },
+{ "solexa", no_argument, &solexa_flag, 1 },
+{ "summary", no_argument, &summary_flag, 1 },
+{ "space-in-name", no_argument, &space_in_name_flag, 1 },
+/* These options don't set a flag.
+ We distinguish them by their indices. */
+{ "input", required_argument, 0, 'i' },
+{ "output", required_argument, 0, 'o' },
+{ 0, 0, 0, 0 } };
+
+static int parse_argument(int argc, char *argv[]) {
+	int c;
+	while (1) {
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+		c = getopt_long(argc, argv, "i:o:", long_options, &option_index);
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+		switch (c) {
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf("option %s", long_options[option_index].name);
+			if (optarg)
+				printf(" with arg %s", optarg);
+			printf("\n");
+			break;
+		case 'i':
+			INPUT = gdl_string_clone(optarg);
+			break;
+		case 'o':
+			OUTPUT = gdl_string_clone(optarg);
+			break;
+		case '?':
+			GDL_ERROR_VAL("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+/**
+ * \fn static int check_argument(void)
+ * \brief This function checks the main function arguments.
+ * \return a success indicator
+ */
+static int check_argument(void) {
+	if (INPUT == 0) {
+		GDL_ERROR_VAL("No input fastq file provided", GDL_FAILURE, 1);
+	}
+	if (OUTPUT == 0 && !summary_flag) {
+		GDL_ERROR_VAL("No output stem file provided", GDL_FAILURE, 1);
+	}
+	return GDL_SUCCESS;
+}
+
+/**
+ * \fn static int help(void)
+ * \brief This function prints the help
+ */
+static int help(void) {
+	print_header(PROGRAM);
+	printf("\n");
+	printf("--help\tDisplay a brief help on program usage\n");
+	printf("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf("\n");
+	printf("--solexa\tSolexa fastq format\n");
+	printf("--summary\tOutput only on standard output basic statistics about the sequences\n");
+	printf("\n");
+	printf("--input or -i\tAn input fastq file\n");
+	printf("--output or -o\tThe output stem\n");
+}
+
+static char BASES[6] = {'a','t','g','c','n','o'};
+
+typedef struct
+{
+    size_t q_max;
+    size_t ** rq;
+    size_t rq_max;
+    size_t rl_max;
+    size_t *rq_imin;
+    size_t *rq_imax;
+    size_t *rq_avg;
+    size_t nr;
+    size_t *rl;
+    size_t * rb;
+} fastq_workspace;
+
+fastq_workspace *
+fastq_workspace_alloc (const size_t q_max, const size_t rq_max)
+{
+   size_t i; 
+   fastq_workspace * w = GDL_CALLOC (fastq_workspace, 1);
+
+    w->q_max  = q_max;
+    w->rq_max = rq_max;
+    w->rq_avg=GDL_CALLOC(size_t, q_max); 
+    w->rq = GDL_CALLOC(size_t *, rq_max);
+    w->rq_imin=GDL_MALLOC(size_t, rq_max); 
+    for(i=0;i<rq_max;i++) w->rq_imin[i]=q_max;
+    w->rq_imax=GDL_CALLOC(size_t, rq_max); 
+    w->rl = GDL_CALLOC(size_t, rq_max);
+    w->rb = GDL_CALLOC(size_t, 6);
+   return w;
+}
+
+void
+fastq_workspace_resize (fastq_workspace * w, const size_t n)
+{
+    if (n > w->rq_max)
+    {
+       size_t j;
+
+       size_t * rl_new = GDL_CALLOC(size_t, n);
+       memcpy(rl_new, w->rl, sizeof(size_t)*w->rq_max);
+       GDL_FREE (w->rl);
+       w->rl = rl_new;
+       size_t ** rq_new = GDL_CALLOC(size_t *, n);
+       memcpy(rq_new, w->rq, sizeof(size_t *)*w->rq_max);
+       GDL_FREE (w->rq);
+       w->rq=rq_new;
+       size_t * rq_imin_new = GDL_MALLOC(size_t, n);
+       memcpy(rq_imin_new, w->rq_imin, sizeof(size_t)*w->rq_max);
+       GDL_FREE (w->rq_imin);
+       w->rq_imin=rq_imin_new;
+       for(j=w->rq_max;j<n;j++) w->rq_imin[j]=w->q_max;
+       size_t * rq_imax_new = GDL_CALLOC(size_t, n);
+       memcpy(rq_imax_new, w->rq_imax, sizeof(size_t)*w->rq_max);
+       GDL_FREE (w->rq_imax);
+       w->rq_imax=rq_imax_new;
+       w->rq_max=n;
+    }
+}
+
+int main(int argc, char *argv[])
+{
+	int status;
+	parse_argument(argc, argv);
+	if (help_flag) {
+		exit(help());
+	}
+
+	status = check_argument();
+
+	if (status == GDL_SUCCESS) 
+        {
+	   gzFile fp;
+	   kseq_t *seq;
+	   int l;
+           size_t i,j,n,q;
+           double qd;
+
+           if (summary_flag)
+           {
+                   size_t nr = 0;
+		   fp  = gzopen(INPUT, "r");
+		   seq = kseq_init(fp);
+     
+                   fprintf(stdout, "landmark size ambiguous quality\n");
+		   while ((l = kseq_read(seq)) >= 0)
+		   { 
+		   
+				if (space_in_name_flag)
+				{
+				gdl_string * name_comment = gdl_string_alloc(strlen(seq->name.s) + 1 + strlen(seq->name.s));
+				strcpy(name_comment,seq->name.s);
+				strcat(name_comment," ");
+				strcat(name_comment,seq->comment.s);
+				//printf("name_comment: %s\n",name_comment);
+				free(seq->name.s);
+				seq->name.s = name_comment;
+				}
+			   // sequence length
+			   n = strlen(seq->seq.s);
+			   // sequence
+			   for(i = nr = 0; i < n; i++)
+			   {
+			      switch(tolower(seq->seq.s[i]))
+			      {
+				 case 'a':
+				 case 't':
+				 case 'g':
+				 case 'c':
+				    break;
+				 default:
+                                    nr++;
+				    break;
+			      }
+			   }
+                           fprintf(stdout, "%s %ld %ld", seq->name.s, n, nr);
+			   // quality score
+			   if (seq->qual.l)
+			   {
+			       size_t avg_q = 0;
+			       for(i = 0; i < n; i++)
+			       {
+				  if (solexa_flag) 
+				  {
+				     qd = 10 * log(1 + pow(10, (seq->qual.s[i] - 64) / 10.0)) / log(10);
+				      q = (size_t)floor(qd);
+				  }
+				  else 
+				  {
+				     q = seq->qual.s[i] - 33;
+				  }
+                                  avg_q += q;
+			       }
+			       avg_q /= n;
+                               fprintf(stdout, " %ld", avg_q);
+			   } 
+                           else
+                           {
+                              fprintf(stdout, " NA");
+                           }
+                           fprintf(stdout, "\n");
+		   }
+		   kseq_destroy(seq);
+		   gzclose(fp);
+           }
+           else
+           {
+
+		   fastq_workspace * w = fastq_workspace_alloc (93, 100);
+
+		   fp = gzopen(INPUT, "r");
+		   seq = kseq_init(fp);
+		   while ((l = kseq_read(seq)) >= 0)
+		   { 
+			   if (verbose_flag && (w->nr && w->nr % 100000==0))
+			   {
+			      fprintf (stderr, "[mgx-fastqstat] processed %ld reads\n", w->nr);
+			      fflush(stderr);
+			   }
+			   (w->nr)++;
+			   //printf("name: %s\n", seq->name.s);
+			   //if (seq->comment.l) printf("comment: %s\n", seq->comment.s);
+			   // sequence length
+			   n = strlen(seq->seq.s);
+			   if (n > w->rl_max) w->rl_max = n;
+			   fastq_workspace_resize (w, n);
+			   // sequence
+			   w->rl[n-1]++;
+			   for(i = 0; i < n; i++)
+			   {
+			      switch(tolower(seq->seq.s[i]))
+			      {
+				 case 'a':
+				    w->rb[0]++;
+				    break;
+				 case 't':
+				    w->rb[1]++;
+				    break;
+				 case 'g':
+				    w->rb[2]++;
+				    break;
+				 case 'c':
+				    w->rb[3]++;
+				    break;
+				 case 'n':
+				    w->rb[4]++;
+				    break;
+				 default:
+				    w->rb[5]++;
+				    break;
+			      }
+			   }
+			   // quality score
+			   if (seq->qual.l)
+			   {
+			       size_t avg_q = 0;
+			       for(i = 0; i < n; i++)
+			       {
+				  if (solexa_flag) 
+				  {
+				     qd = 10 * log(1 + pow(10, (seq->qual.s[i] - 64) / 10.0)) / log(10);
+				      q = (size_t)floor(qd);
+				  }
+				  else 
+				  {
+				     q = seq->qual.s[i] - 33;
+				  }
+				  if (q > w->q_max) 
+				  {
+				     q = w->q_max;
+				     if (verbose_flag)
+				     {
+					fprintf (stderr, "[mgx-fastqstat] read %s has a quality score %ld at position %ld higher than the expected maximum (%ld)\n", seq->name.s, q, i+1, w->q_max);
+					fflush(stderr);
+				     }
+				  }
+				  if (!w->rq[i])
+				  {
+				     w->rq[i] = GDL_CALLOC(size_t, w->q_max+1);
+				  }
+				  if (q > w->rq_imax[i]) {w->rq_imax[i] = q;}
+				  if (q < w->rq_imin[i]) {w->rq_imin[i] = q;}
+				  w->rq[i][q]++;
+				  avg_q += q;
+			       }
+			       avg_q /= n;
+			       w->rq_avg[avg_q]++;
+			   }
+		   }
+		   kseq_destroy(seq);
+		   gzclose(fp);
+		   gdl_string * file;
+		   FILE * stream; 
+		   // read content
+		   file   = gdl_string_sprintf("%s_nucont.txt", OUTPUT);
+		   stream = gdl_fileopen (file, "w");
+		   for(i = n = 0; i < 6; n+=w->rb[i], i++);
+		   fprintf(stream, "base percentage\n");
+		   for(i = 0; i < 6; i++) 
+		   {
+		       fprintf(stream, "%c %3.2f\n", BASES[i], ((double)w->rb[i])/n);
+		   }  
+		   gdl_fileclose (file, stream);
+		   gdl_string_free (file);
+		   // read length
+		   file   = gdl_string_sprintf("%s_length.txt", OUTPUT);
+		   stream = gdl_fileopen (file, "w");
+		   for(i = 0; i < w->rl_max; i++)
+		   {
+		      fprintf(stream, "%ld %ld\n", i+1, w->rl[i]);
+		   }
+		   gdl_fileclose (file, stream);
+		   gdl_string_free (file);
+		   // average quality
+		   file   = gdl_string_sprintf("%s_avg_quality.txt", OUTPUT);
+		   stream = gdl_fileopen (file, "w");
+		   fprintf(stream, "quality frequency\n");
+		   for(i = 0; i < w->q_max; i++) 
+		   {
+		       if (!w->rq_avg[i]) continue;
+		       fprintf(stream, "%ld %ld\n", i, w->rq_avg[i]);
+		   }  
+		   gdl_fileclose (file, stream);
+		   gdl_string_free (file);
+		   // compute simple stats per position
+		   file   = gdl_string_sprintf("%s_quality.txt", OUTPUT);
+		   stream = gdl_fileopen (file, "w");
+		   double qt[5] = {0.025,0.25,0.5,0.75,0.975};
+		   for(i = 0; i < w->rl_max; i++)
+		   {
+		       // tot number of reads
+		       fprintf(stream, "%ld 0.000 %2.1f\n", i+1, (float)w->rq_imin[i]);
+		       for(n=0,j=w->rq_imin[i];j<=w->rq_imax[i];n+=w->rq[i][j],j++);
+		       if (n > 5 && (w->rq_imax[i] != w->rq_imin[i]))
+		       {
+			  double * qu = GDL_MALLOC (double, w->rq_imax[i]-w->rq_imin[i]+1);
+			  double lqt;
+			  for(qd = 0., j = w->rq_imin[i]; j <= w->rq_imax[i]; j++)
+			  {
+			      qd += w->rq[i][j];
+			      qu[j-w->rq_imin[i]] = qd/(double)n;
+			  }
+			  for(n = 0, j = w->rq_imin[i]; j < w->rq_imax[i]; j++)
+			  {
+			     if (qu[j-w->rq_imin[i]] <= qt[n] && qu[j-w->rq_imin[i]+1] >= qt[n])
+			     {
+				lqt = (qt[n] - qu[j-w->rq_imin[i]])/(qu[j-w->rq_imin[i]+1]-qu[j-w->rq_imin[i]]) + j;
+				fprintf(stream, "%ld %1.3f %2.1f\n", i+1, qt[n], lqt); 
+				n++;
+			     }
+			     if (n == 5) break;
+			  }
+			  for(j = n; j < 5; j++)
+			  {
+			     fprintf(stream, "%ld %1.3f %2.1f\n", i+1, qt[j], lqt);
+			  }
+			  GDL_FREE(qu);
+		      }
+		      else if (w->rq_imax[i] == w->rq_imin[i])
+		      {
+			  for(j = 0; j < 5; j++)
+			  {
+			     fprintf(stream, "%ld %1.3f %2.1f\n", i+1, qt[j], (float)w->rq_imax[i]);
+			  }
+		      }
+		      else
+		      {
+			  for(j = 0; j < 3; j++)
+			  {
+			     fprintf(stream, "%ld %1.3f %2.1f\n", i+1, qt[j], (float)w->rq_imin[i]);
+			  }
+			  for(j = 3; j < 5; j++)
+			  {
+			     fprintf(stream, "%ld %1.3f %2.1f\n", i+1, qt[j], (float)w->rq_imax[i]);
+			  }
+		      }
+		      fprintf(stream, "%ld 1.000 %2.1f\n", i+1, (float)w->rq_imax[i]);
+		   }
+		   gdl_fileclose (file, stream);
+		   gdl_string_free (file);
+             }
+	}
+
+	exit(0);
+}

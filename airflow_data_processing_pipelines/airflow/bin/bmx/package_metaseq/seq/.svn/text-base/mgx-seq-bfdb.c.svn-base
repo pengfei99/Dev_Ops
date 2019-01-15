@@ -1,0 +1,352 @@
+/*
+ *  mgx-bfdb.c
+ *
+ *  $Author: veyriejb $, $Date: 2011/05/12 15:30:31 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+#include <ctype.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_io.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_seq_io.h>
+
+#include "mixgenomix.h"
+#include "gzutil.h"
+#include "fasta.h"
+#include "bloom.h"
+
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-bfdb";
+
+static int help_flag    = 0;
+static int verbose_flag = 0;
+static int fasta_file_flag = 0;
+
+static gdl_string * INPUT    = NULL;
+static gdl_string * OUTPUT   = NULL;
+static gdl_string * HASHFUNC = "jenkins";
+static size_t KMERSIZE       = 21;
+static double FPP            = 0.05;
+
+static struct option long_options[] =
+ {
+   /* These options set a flag. */
+   {"help", no_argument,          &help_flag, 1},
+   {"verbose", no_argument,       &verbose_flag, 1},
+   {"brief",   no_argument,       &verbose_flag, 0},
+   {"fasta-file",   no_argument,       &fasta_file_flag, 1},
+   /* These options don't set a flag.
+      We distinguish them by their indices. */
+   {"output",   required_argument, 0, 'o'},
+   {"input",   required_argument, 0, 'i'},
+   {"kmer-size",   required_argument, 0, 'k'},
+   {"false-positive",   required_argument, 0, 'f'},
+   {"hash-func",   required_argument, 0, 'h'},
+   {0, 0, 0, 0}
+ };
+
+static int
+parse_argument (int argc, char *argv[])
+{
+	int c;
+
+   while (1)
+     {
+
+       /* getopt_long stores the option index here. */
+       int option_index = 0;
+
+       c = getopt_long (argc, argv, "i:o:k:f:h:",
+                        long_options, &option_index);
+
+       /* Detect the end of the options. */
+       if (c == -1)
+         break;
+
+       switch (c)
+         {
+         case 0:
+           /* If this option set a flag, do nothing else now. */
+           if (long_options[option_index].flag != 0)
+             break;
+           printf ("option %s", long_options[option_index].name);
+           if (optarg)
+             printf (" with arg %s", optarg);
+           printf ("\n");
+           break;
+
+ 		 case 'i':
+           INPUT = gdl_string_clone (optarg);
+           break;
+         case 'o':
+           OUTPUT = gdl_string_clone (optarg);
+           break;
+         case 'f':
+		   FPP = (double) atof (optarg);
+		   break;
+         case 'k':
+		   KMERSIZE = (size_t) atol (optarg);
+		   break;
+         case 'h':
+		   HASHFUNC = gdl_string_clone (optarg);
+		   break;
+         case '?':
+           GDL_ERROR_VAL ("Unknown arguments", GDL_EINVAL, -1);
+         default:
+           GDL_ERROR_VAL ("Bad arguments", GDL_EINVAL, -1);
+         }
+     }
+}
+
+static int
+check_argument (void)
+{
+
+	if (INPUT == 0)
+	{
+		GDL_ERROR_VAL ("No input file provided",
+					   GDL_FAILURE,
+					   1);
+	}
+	if (OUTPUT == 0)
+	{
+		GDL_ERROR_VAL ("No output file provided",
+					   GDL_FAILURE,
+					   1);
+	}
+	if (!KMERSIZE)
+	{
+		GDL_ERROR_VAL ("Kmer size must be > 0",
+					   GDL_FAILURE,
+					   1);
+	}
+	return GDL_SUCCESS;
+}
+
+// inline function to fill the bloom filter given the current character from
+// a fasta file
+#define FILL(c,header,i,kmer,bloom){if (isblank (c)) continue;\
+									else if (c=='>')\
+									{\
+										i=0;header=1;\
+									}\
+									else if ((c=='\n' || c =='\r') && header)\
+									{\
+										header=0;\
+									}\
+									else if ((c!='\n' && c !='\r') && !header)\
+									{\
+										kmer[i]=c;\
+										if (i == k-1)\
+										{\
+										   mgx_bloom_filter_add (bloom, kmer, k);\
+										   for(j = 0; j < k-1; j++)\
+										   {\
+											  kmer[j]=kmer[j+1];\
+										   }\
+										}\
+										else\
+										{\
+											i++;\
+										}\
+									}}
+
+int
+mgx_fasta_in_line_bloom_fill_0 (gzFile stream, mgx_bloom_filter * bloom, const size_t k)
+{
+	size_t i = 0, j;
+	int c,header=0;
+	gdl_string * kmer = gdl_string_alloc (k);
+
+	while ((c=gzgetc(stream))!=EOF)
+	{
+		FILL(c, header, i, kmer, bloom);
+	}
+
+	return GDL_SUCCESS;
+}
+
+int
+mgx_fasta_in_line_bloom_fill_1 (FILE * stream, mgx_bloom_filter * bloom, const size_t k)
+{
+	size_t i = 0, j;
+	int c,header=0;
+	gdl_string * kmer = gdl_string_alloc (k);
+
+	while ((c=fgetc(stream))!=EOF)
+	{
+		FILL(c, header, i, kmer, bloom);
+	}
+
+	return GDL_SUCCESS;
+}
+
+int
+mgx_fasta_in_line_bloom_fill (const gdl_string * filename, const gdl_boolean gzip, mgx_bloom_filter * bloom, const size_t k)
+{
+	if (gzip)
+	{
+		gzFile stream = gzopen (filename, "r");
+		if (stream)
+		{
+			mgx_fasta_in_line_bloom_fill_0(stream, bloom, k);
+			gzclose (stream);
+		}
+	}
+	else
+	{
+		FILE * stream = gdl_fileopen (filename, "r");
+		if (stream)
+		{
+			mgx_fasta_in_line_bloom_fill_1(stream, bloom, k);
+			gdl_fileclose (filename, stream);
+		}
+	}
+}
+
+static int
+help (void)
+{
+   print_header (PROGRAM);
+   printf ("\n");
+   printf ("--help\tDisplay a brief help on program usage\n");
+   printf ("--verbose\tOutput message on standard output to see what the program is doing\n");
+   printf ("\n");
+   printf ("--fasta-file\tUse this file if the file providing via -i is directly a fasta file\n");
+   printf ("\n");
+   printf ("--input or -i\tA fasta file\n");
+   printf ("--output or -o\tThe output Bloom filter file\n");
+   printf ("--kmer-size or -k\tThe length of the kmer to insert into the Bloom filter (default is 21, max is 31)\n");
+   printf ("--false-positive or -f\tThe false positive probability of the Bloom Filter\n");
+   printf ("--hash-func or -h\tThe hash function to use for the Bloom filter (default is jenkins)\n");
+}
+
+int
+main (int argc, char *argv[])
+{
+  int status;
+
+  parse_argument (argc, argv);
+
+  if (help_flag)
+  {
+  	  exit (help());
+  }
+
+  status = check_argument ();
+
+  if (status == GDL_SUCCESS)
+  {
+	    gdl_runtime * runtime;
+	    size_t i, j, n, m, d, nfile;
+	    gdl_string ** filenames = 0;
+	    FILE * stream;
+
+	    runtime = runtime_setup ();
+
+	    // Get the hashfunction
+	    const mgx_hashfunc_type * hashfunc_t = mgx_hashfunc_type_lookup (HASHFUNC);
+	    if (!hashfunc_t)
+	    {
+	    	GDL_ERROR_VAL (gdl_string_sprintf("Hash function %s is not available", HASHFUNC), GDL_EINVAL, GDL_EINVAL);
+	    }
+	    if (fasta_file_flag)
+	    {
+	    	n = mgx_fasta_file_totnucount (INPUT, is_gzipped(INPUT));
+		}
+	    else
+	    {
+			// Get the list of files
+			filenames = gdl_string_one_column_file (INPUT, &nfile);
+			// Evaluate the total length of the sequences (if not supplied by the user)
+			for(i = n = 0; i < nfile; i++)
+			{
+				int nf = mgx_fasta_file_totnucount (filenames[i], is_gzipped(filenames[i]));
+				if (nf==-1)
+				{
+					GDL_ERROR_VAL (gdl_string_sprintf ("Unable to get the number of nucleotides from fasta file %s\n", filenames[i]), GDL_EINVAL, GDL_EINVAL);
+				}
+				n += nf;
+			}
+	    }
+		// Create the bloom filter
+		if (verbose_flag)
+		{
+			fprintf(stdout, "--\n");
+			fprintf(stdout, "Bloom Filter:\n");
+			fprintf(stdout, "  Kmer length:                %ld\n", KMERSIZE);
+			fprintf(stdout, "  Expected number of kmers:   %ld\n", n - KMERSIZE + 1);
+			fprintf(stdout, "  False positive probability: %e\n", FPP);
+			fprintf(stdout, "  Hash function name:         %s\n", hashfunc_t->name);
+			fflush(stdout);
+		}
+		mgx_bloom_filter * bloom = mgx_bloom_filter_alloc(n - KMERSIZE + 1, FPP, hashfunc_t, runtime->rng);
+		if (verbose_flag)
+		{
+			fprintf(stdout, "  Table size:                 %ld\n", bloom->table_size);
+			fprintf(stdout, "  Number of hashes:           %ld\n", bloom->salt_count);
+			fprintf(stdout, "\n--\nStart kmer insertions:");
+			fflush(stdout);
+		}
+		if (fasta_file_flag)
+		{
+			// Store the kmers, via on-line filling of the bloom filter
+			mgx_fasta_in_line_bloom_fill (INPUT, is_gzipped(INPUT), bloom, KMERSIZE);
+			if (verbose_flag)
+			{
+				fprintf(stdout, "\nFasta file %s: [ DONE ]", INPUT);
+				fflush(stdout);
+			}
+		}
+		else
+		{
+			// Store the kmers, via on-line filling of the bloom filter
+			for(i = 0; i < nfile; i++)
+			{
+				mgx_fasta_in_line_bloom_fill (filenames[i], is_gzipped(filenames[i]), bloom, KMERSIZE);
+				if (verbose_flag)
+				{
+					fprintf(stdout, "\nFasta file %s: [ DONE ]", filenames[i]);
+					fflush(stdout);
+				}
+			}
+		}
+		// Save the bloom filter
+		if (verbose_flag)
+		{
+			fprintf(stdout, "\n--\nSave Bloom filter: wait...");
+			fflush(stdout);
+		}
+		stream = gdl_fileopen (OUTPUT, "w");
+		mgx_bloom_filter_fwrite (stream, bloom);
+		gdl_fileclose (OUTPUT, stream);
+		if (verbose_flag)
+		{
+			fprintf(stdout, "\b\b\b\b\b\b\b[ DONE ]\n");
+			fflush(stdout);
+		}
+		// Save the runtime
+		runtime_setdown (runtime);
+  }
+
+  exit (0);
+}
+

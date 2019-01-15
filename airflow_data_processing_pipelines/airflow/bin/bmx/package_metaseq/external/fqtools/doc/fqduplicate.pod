@@ -1,0 +1,47 @@
+=pod
+
+=head1 NAME
+
+=over 4
+
+=item B<fqduplicate> - FastQ sequence duplicate finder
+
+=back
+
+=head1 SYNOPSIS
+
+=over 4
+
+=item B<fqduplicate> [options] F<file> [F<file>]
+
+=back
+
+=head1 OPTIONS
+
+Following command line options are allowed:
+
+=over 4
+
+=item -h
+
+Usage display.
+
+=back
+
+=head1 DESCRIPTION
+
+B<fqduplicate> search for duplicated sequences, or pair of sequences,
+in a FastQ formatted files and outputs the corresponding identifier
+list.
+
+When duplicated entries are detected, all except one will be reported
+as duplicates. All entries are sorted according to the sum of the base
+qualities, to only keep the one with the higher score.
+
+For a pair of sequences only the first pair mate will be reported.
+
+=head1 AUTHOR
+
+Nicolas Joly (njoly@pasteur.fr), Institut Pasteur.
+
+=cut

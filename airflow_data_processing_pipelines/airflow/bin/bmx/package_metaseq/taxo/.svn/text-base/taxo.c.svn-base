@@ -1,0 +1,956 @@
+/*
+ *  taxo.c
+ *
+ *  $Author: bonnaudb $, $Date: 2012/06/12 09:24:45 $, $Version$
+ *
+ *  MetagenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+#include <stdint.h>
+#include <limits.h>
+#include <stdarg.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_types.h>
+#include <gdl/gdl_io.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_list.h>
+#include <gdl/gdl_string.h>
+
+#include "taxo.h"
+
+/*==================================================================
+ *
+ * TAXON
+ *
+ *==================================================================*/
+
+mgx_taxon *
+mgx_taxon_alloc (const size_t index)
+{
+	mgx_taxon * t;
+
+	t        = GDL_CALLOC (mgx_taxon, 1);
+	t->index = index;
+
+	return t;
+}
+
+void
+mgx_taxon_free (mgx_taxon * t)
+{
+	if (t)
+	{
+		size_t i;
+		for(i = 0; i < t->nname; i++)
+		{
+			GDL_FREE (t->names[i]);
+		}
+		GDL_FREE (t->names);
+		for(i = 0; i < t->noname; i++)
+		{
+			GDL_FREE (t->onames[i]);
+		}
+		GDL_FREE (t->onames);
+		GDL_FREE(t->children);
+
+		GDL_FREE (t);
+	}
+}
+
+int
+mgx_taxon_add_name (mgx_taxon * t, const gdl_string * taxon_name)
+{
+	if (t->nname)
+	{
+		gdl_string ** tmp = GDL_MALLOC (gdl_string * , t->nname+1);
+		memcpy(tmp, t->names, sizeof(gdl_string *)*(t->nname));
+		GDL_FREE (t->names);
+		t->names=tmp;
+	}
+	else
+	{
+		t->names = GDL_MALLOC (gdl_string * , 1);
+	}
+	t->names[t->nname] = gdl_string_clone (taxon_name);
+	return (t->nname)++;
+}
+
+int
+mgx_taxon_attach_organism (mgx_taxon * t, const gdl_string * organism_name)
+{
+	if (t->noname)
+	{
+		gdl_string ** tmp = GDL_MALLOC (gdl_string * , t->noname+1);
+		memcpy(tmp, t->onames, sizeof(gdl_string *)*(t->noname));
+		GDL_FREE (t->onames);
+		t->onames=tmp;
+	}
+	else
+	{
+		t->onames = GDL_MALLOC (gdl_string * , 1);
+	}
+	t->onames[t->noname] = gdl_string_clone (organism_name);
+	return (t->noname)++;
+}
+
+mgx_taxon *
+mgx_taxon_fread (FILE * stream)
+{
+	if (stream)
+	{
+		int status;
+		size_t i;
+		mgx_taxon * t;
+
+		t = GDL_CALLOC (mgx_taxon, 1);
+
+		status = fread (&(t->depth), sizeof(size_t), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		status = fread (&(t->id), sizeof(size_t), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		status = fread (&(t->nchild), sizeof(size_t), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		status = fread (&(t->nname), sizeof(size_t), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		status = fread (&(t->noname), sizeof(size_t), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+
+		if (t->nname)
+		{
+			t->names = GDL_MALLOC (gdl_string *, t->nname);
+			for(i = 0; i < t->nname; i++)
+			{
+				t->names[i] = gdl_string_fread (stream);
+				GDL_FREAD_STATUS (t->names[i]!=0, 1);
+			}
+		}
+		if (t->noname)
+		{
+			t->onames = GDL_MALLOC (gdl_string *, t->noname);
+			for(i = 0; i < t->noname; i++)
+			{
+				t->onames[i] = gdl_string_fread (stream);
+				GDL_FREAD_STATUS (t->onames[i]!=0, 1);
+			}
+		}
+
+		// Get the id of the children
+		t->extra = GDL_MALLOC (size_t, t->nchild);
+		status   = fread (t->extra, sizeof(size_t), t->nchild, stream);
+		GDL_FREAD_STATUS (status, t->nchild);
+
+		return t;
+	}
+}
+
+int
+mgx_taxon_fwrite (FILE * stream, const mgx_taxon * t)
+{
+	if (stream && t)
+	{
+		int status;
+		size_t i;
+
+		status = fwrite (&(t->depth), sizeof(size_t), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		status = fwrite (&(t->id), sizeof(size_t), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		status = fwrite (&(t->nchild), sizeof(size_t), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		status = fwrite (&(t->nname), sizeof(size_t), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		status = fwrite (&(t->noname), sizeof(size_t), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		if (t->nname)
+		{
+			for(i = 0; i < t->nname; i++)
+			{
+				status = gdl_string_fwrite (stream, t->names[i]);
+				GDL_FWRITE_STATUS (status, GDL_SUCCESS);
+			}
+		}
+		if (t->noname)
+		{
+			for(i = 0; i < t->noname; i++)
+			{
+				status = gdl_string_fwrite (stream, t->onames[i]);
+				GDL_FWRITE_STATUS (status, GDL_SUCCESS);
+			}
+		}
+		for(i = 0; i < t->nchild; i++)
+		{
+			status = fwrite (&(t->children[i]->index), sizeof(size_t), 1, stream);
+			GDL_FWRITE_STATUS (status, 1);
+		}
+
+		return GDL_SUCCESS;
+	}
+
+	return GDL_EINVAL;
+}
+
+//recursive function used in .db to Newick format conversion
+//TODO: include branch lengths
+
+void mgx_dfsNewick (mgx_taxon * t, FILE *stream, const size_t print_mode){
+	int i,nchild=0;
+	if(t->nchild!=0){
+				nchild = t->nchild;
+				//Pruned taxonomy sanity check
+				if(nchild==1){
+					  printf("\nPruned taxonomy needed !");
+				      exit(1);
+				}
+				fprintf(stream,"(");
+		        for(i=0;i<nchild;i++){
+		        	mgx_dfsNewick(t->children[i],stream,print_mode);
+		        	if(i+1<nchild) fprintf(stream,"%s",",");
+		        	else {
+                                   if (print_mode) fprintf(stream,")%s:1",t->names[0]);
+                                   else fprintf(stream,")%ld:1",t->id);
+                                }
+		        }
+	}
+        else
+        {
+           if (print_mode) fprintf(stream,"%s:1",t->names[0]);
+           else fprintf(stream,"%ld:1",t->id);
+        }
+}
+/*==================================================================
+ *
+ * TAXONOMY
+ *
+ *==================================================================*/
+
+mgx_taxonomy *
+mgx_taxonomy_alloc (const size_t ntaxon)
+{
+	mgx_taxonomy * t;
+
+	t = GDL_CALLOC (mgx_taxonomy, 1);
+
+	t->ntaxon      = ntaxon;
+	t->taxons      = GDL_CALLOC (mgx_taxon *, ntaxon);
+
+	return t;
+}
+
+void
+mgx_taxonomy_free (mgx_taxonomy * t)
+{
+	if (t)
+	{
+		size_t i;
+		for(i = 0; i < t->ntaxon; i++)
+		{
+			mgx_taxon_free (t->taxons[i]);
+		}
+		GDL_FREE (t->taxons);
+		mgx_taxonomy_rank_free (t->ranks);
+		GDL_FREE (t->E);
+		GDL_FREE (t->L);
+		GDL_FREE (t->H);
+		GDL_MATRIX_FREE (t->M, t->ntaxon*2-1);
+
+		GDL_FREE(t->taxid2index);
+
+		GDL_FREE (t);
+	}
+}
+
+/**
+ * http://www.topcoder.com/tc?module=Static&d1=tutorials&d2=lowestCommonAncestor
+ *
+ *  Euler path/circuit of the taxonomy (reduce LCA to RMQ)
+ *
+ *   E[1, 2*N-1] - the nodes visited in an Euler Tour of T;
+ *                 E[i] is the label of i-th visited node in the tour
+ *   L[1, 2*N-1] - the levels of the nodes visited in the Euler Tour; L[i] is the level of node E[i]
+ *   H[1, N] - H[i] is the index of the first occurrence of node i in E (any occurrence would be good, so it's not bad if we consider the first one)
+ *
+ *   find_tour(u):
+		  while the set of incident edges of u is non-empty:
+			  pick an incident vertex v and remove (u,v) from E
+			  find_tour(v)
+		  add u to the head of the linkedlist 'tour'
+ */
+
+/*static void
+_mgx_taxonomy_euler_tour (gdl_list * lastNodeStack, size_t E[], size_t L[], size_t H[], size_t * eidx)
+{
+	size_t i;
+
+	while (gdl_list_size(lastNodeStack) != 0)
+	{
+		mgx_taxon * current = (mgx_taxon *) gdl_list_shift_back (lastNodeStack);
+		printf("TAXON %ld %ld (%d): E[%ld]=%ld\n", current->id, current->index, current->_visited, *eidx, current->depth);
+		fflush(stdout);
+		// check if we already visit this node
+		L[*eidx] = current->depth;
+		E[*eidx] = current->index;
+		(*eidx)++;
+                if (!current->_visited)
+                {
+		       current->_visited = gdl_true;
+		       H[current->index] = *eidx-1;
+		       // If there is a next then push the current value on to the stack along with
+		       // the current value.
+		      for(i = 0; i < current->nchild; i++)
+		      {
+			 gdl_list_push_back (lastNodeStack, current, 0);
+			 gdl_list_push_back (lastNodeStack, current->children[i], 0);
+	  	         _mgx_taxonomy_euler_tour (lastNodeStack, E, L, H, eidx);
+		      }
+		}
+	}
+}*/
+
+
+void
+_mgx_taxonomy_euler_tour( mgx_taxon * taxon, gdl_list * lastNodeStack)
+{
+   size_t j;
+
+  for(j = 0; j < taxon->nchild; j++)
+  {
+        gdl_list_push_back (lastNodeStack, taxon, 0);
+       _mgx_taxonomy_euler_tour(taxon->children[j], lastNodeStack);
+  }
+
+  gdl_list_push_back (lastNodeStack, taxon, 0);
+}
+
+static void
+_mgx_taxonomy_euler_tour_alloc (mgx_taxonomy * T)
+{
+	T->E = GDL_CALLOC (size_t, T->ntaxon*2-1);
+	T->L = GDL_CALLOC (size_t, T->ntaxon*2-1);
+	T->H = GDL_CALLOC (size_t, T->ntaxon);
+}
+
+void
+mgx_taxonomy_euler_tour (mgx_taxonomy * T)
+{
+        size_t i;
+	gdl_list * lastNodeStack;
+
+	_mgx_taxonomy_euler_tour_alloc (T);
+
+	lastNodeStack = gdl_list_alloc (gdl_list_default);
+
+	_mgx_taxonomy_euler_tour (T->root, lastNodeStack);
+
+	 i=0;
+	 gdl_list_itr * itr = gdl_list_iterator_front (lastNodeStack);
+	 do
+	 {
+	    mgx_taxon * t = (mgx_taxon *) gdl_list_iterator_value (itr);
+            T->L[i] = t->depth;
+            T->E[i] = t->index;
+            if (!t->_visited)
+                        {
+                        	T->H[t->index] = i;
+                        	t->_visited    = gdl_true;
+                        }
+                        i++;
+	 }
+	 while(gdl_list_iterator_next (itr));
+	 gdl_list_iterator_free (itr);
+
+
+	 gdl_list_free (lastNodeStack);
+	 if (i != T->ntaxon*2-1)
+	 {
+		GDL_ERROR_VOID ("Incomplete Euler tour", GDL_FAILURE);
+	 }
+}
+/**
+ * RMQ Algorihtm
+ *
+ * Sparse Table (ST) algorithm
+ *
+ * Bender and Farach-Colton, "The LCA Problem Revisited",
+ * Proc. LATIN 2000 (pp.88-94), http://www.cs.sunysb.edu/~bender/pub/lca.ps
+ */
+static void
+_mgx_taxonomy_rmq_alloc (mgx_taxonomy * T, const size_t N)
+{
+   T->M = GDL_MATRIX_ALLOC (size_t, N, 1+(size_t)floor(log(N)/log(2)));
+}
+
+void
+mgx_taxonomy_rmq_prepare (mgx_taxonomy * T)
+{
+  size_t i, j, N = 2*T->ntaxon-1;
+
+  _mgx_taxonomy_rmq_alloc (T, N);
+
+  //initialize M for the intervals with length 1
+  for (i = 0; i < N; i++)
+  {
+	  T->M[i][0] = i;
+  }
+
+  //compute values from smaller to bigger intervals
+
+  for (j = 1; 1 << j <= N; j++)
+  {
+	  for (i = 0; i + (1 << j)-1 < N; i++)
+	  {
+
+		  if ((T->L)[T->M[i][j - 1]] <= (T->L)[T->M[i + (1 << (j - 1)) ][j - 1]])
+			  T->M[i][j] = T->M[i][j-1];
+		  else
+			  T->M[i][j] = T->M[i + (1 << (j - 1)) ][j - 1];
+	  }
+
+  }
+}
+
+int
+mgx_taxonomy_lca_pair (mgx_taxonomy * T, const size_t i, const size_t j)
+{
+   size_t ii = T->H[i];
+   size_t jj = T->H[j];
+
+   if (ii == jj)
+   {
+       return i;
+   }
+   if (ii > jj)
+   {
+       size_t tmp = ii;
+       ii = jj;
+       jj = tmp;
+   }
+   double x  = (double)(jj-ii+1);
+   size_t k  = (size_t) floor(log(x)/log(2));
+
+	if ((T->L)[(T->M)[ii][k]] <= (T->L)[(T->M)[jj-(1 << k)+1][k]])
+		return T->E[(T->M)[ii][k]];
+	else
+		return T->E[(T->M)[jj-(1 << k)+1][k]];
+}
+
+int
+mgx_taxonomy_lca_set (mgx_taxonomy * t, const size_t n, const size_t * taxon_index)
+{
+	int z;
+	size_t i;
+
+	z = taxon_index[0];
+	for(i = 1; i < n; i++)
+	{
+		z = mgx_taxonomy_lca_pair (t, z, taxon_index[i]);
+
+		if (z == -1)
+		{
+			break;
+		}
+	}
+
+	return z;
+}
+/**
+ * mode = 0 (internal index)
+ * mode = 1 (ncbi like index)
+ * mode = 3 (taxon name)
+ */
+int
+mgx_taxonomy_attach_organism (mgx_taxonomy * t, FILE * stream, const size_t mode)
+{
+	size_t i,j,tx,n;
+	gdl_string * line=0, * tok1, * tok2;
+	mgx_taxon * taxon;
+	mgx_taxonomy_lookup_index * taxon_index = 0;
+
+	if (mode==3)
+	{
+		taxon_index = mgx_taxonomy_taxon_lookup_build (t, "name");
+	}
+
+	while(gdl_getline (&line, &n, stream)!=-1)
+	{
+		i=j=0;
+		// organism name
+		tok1  = gdl_string_next_token (line, n, &i, &j);
+		tok2  = gdl_string_next_token (line, n, &i, &j);
+		tx    = (size_t)atol(tok2);
+		taxon = 0;
+		if (mode==1 && t->taxid2index)
+		{
+			if (tx >= t->n_taxid2index)
+			{
+				gdl_string * msg = gdl_string_sprintf ("Taxon %s is out of range\n", tok2);
+				GDL_WARNING(msg, GDL_EINVAL);
+				gdl_string_free (msg);
+			}
+			else
+			{
+				taxon = t->taxons[t->taxid2index[tx]];
+			}
+		}
+		else if (!mode)
+		{
+			if (tx >= t->ntaxon)
+			{
+				gdl_string * msg = gdl_string_sprintf ("Taxon %s is out of range\n", tok2);
+				GDL_WARNING(msg, GDL_EINVAL);
+				gdl_string_free (msg);
+			}
+			else
+			{
+				taxon = t->taxons[tx];
+			}
+		}
+		else if (mode==3)
+		{
+			taxon = mgx_taxonomy_lookup(t, taxon_index, tok2);
+			if (!taxon)
+			{
+				gdl_string * msg = gdl_string_sprintf ("Taxon %s is unknown\n", tok2);
+				GDL_WARNING(msg, GDL_EINVAL);
+				gdl_string_free (msg);
+			}
+		}
+
+		mgx_taxon_attach_organism (taxon, tok1);
+
+		gdl_string_free (tok1);
+		gdl_string_free (tok2);
+		gdl_string_free (line);
+		line=0;
+	}
+
+	gdl_hashtable_free (taxon_index);
+
+	return GDL_SUCCESS;
+}
+
+mgx_taxon *
+mgx_taxonomy_lookup(const mgx_taxonomy * t, mgx_taxonomy_lookup_index * index, const gdl_string * key)
+{
+	size_t * tx = gdl_hashtable_lookup (index, key);
+	if (!tx)
+	{
+		return 0;
+	}
+	return t->taxons[*tx];
+}
+
+mgx_taxonomy_lookup_index *
+mgx_taxonomy_taxon_lookup_build (mgx_taxonomy * t, const gdl_string * attribute)
+{
+	size_t i, j, n;
+	gdl_hashtable * index = 0;
+	char buffer [500];
+
+	if (!strcmp(attribute, "name"))
+	{
+		for(i = 0; i < t->ntaxon; n+=t->taxons[i]->nname, i++);
+		if (n)
+		{
+			index = gdl_hashtable_alloc (gdl_interface_uint, n);
+			for(i = 0; i < t->ntaxon; i++)
+			{
+				for(j = 0; j < t->taxons[i]->nname; j++)
+				{
+					size_t * tx = GDL_MALLOC (size_t, 1);
+					*tx=i;
+					gdl_hashtable_add (index, t->taxons[i]->names[j], tx, 1);
+				}
+			}
+		}
+	}
+	else if (!strcmp(attribute, "organism"))
+	{
+		for(i = 0; i < t->ntaxon; n+=t->taxons[i]->noname, i++);
+		if (n)
+		{
+			index = gdl_hashtable_alloc (gdl_interface_uint, n);
+			for(i = 0; i < t->ntaxon; i++)
+			{
+				for(j = 0; j < t->taxons[i]->noname; j++)
+				{
+					size_t * tx = GDL_MALLOC (size_t, 1);
+					*tx=i;
+					gdl_hashtable_add (index, t->taxons[i]->onames[j], tx, 1);
+				}
+			}
+		}
+	}
+	else if (!strcmp(attribute, "id"))
+	{
+		index = gdl_hashtable_alloc (gdl_interface_uint, t->ntaxon);
+		for(i = 0; i < t->ntaxon; i++)
+		{
+			size_t * tx = GDL_MALLOC (size_t, 1);
+			*tx=i;
+			//gdl_hashtable_add (index, t->taxons[i]->id, tx, 1);
+			sprintf(buffer,"%d",t->taxons[i]->id);
+			gdl_hashtable_add (index, buffer, tx, 1);
+		}
+	}
+
+	return index;
+}
+
+mgx_taxonomy *
+mgx_taxonomy_fread (FILE * stream)
+{
+	if (stream)
+	{
+		int status;
+		unsigned char has;
+		size_t i;
+		mgx_taxonomy * t;
+
+		t = GDL_CALLOC (mgx_taxonomy, 1);
+
+		status = fread (&(t->ntaxon), sizeof(size_t), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		status = fread (&(t->noid), sizeof(size_t), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		status = fread (&(t->n_taxid2index), sizeof(size_t), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		if (t->n_taxid2index)
+		{
+			t->taxid2index = GDL_MALLOC (size_t,  t->n_taxid2index);
+			status = fread (t->taxid2index, sizeof(size_t), t->n_taxid2index, stream);
+			GDL_FREAD_STATUS (status, t->n_taxid2index);
+		}
+		status = fread (&(has), sizeof(unsigned char), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		if (has=='y')
+		{
+			// Ranks
+			t->ranks = mgx_taxonomy_rank_fread (stream, t->ntaxon);
+			GDL_FREAD_STATUS (t->ranks!=0, 1);
+		}
+		// Taxons
+		if (t->ntaxon)
+		{
+			size_t j;
+
+			// 3n to read back the taxonomy
+			// +n = read from stream the taxons
+			// +n = rebuild the pointer graph
+			// +n = find the root (this could be avoid, but as such we don't have to worry about extra flag)
+
+			t->taxons = GDL_MALLOC (mgx_taxon *, t->ntaxon);
+			for(i = 0; i < t->ntaxon; i++)
+			{
+				t->taxons[i]        = mgx_taxon_fread (stream);
+				GDL_FREAD_STATUS (t->taxons[i]!=0, 1);
+				t->taxons[i]->index = i; // avoid to store it ;-)
+			}
+			for(i = 0; i < t->ntaxon; i++)
+			{
+				if (t->taxons[i]->nchild)
+				{
+					t->taxons[i]->children = GDL_MALLOC (mgx_taxon *, t->taxons[i]->nchild);
+					for(j = 0; j < t->taxons[i]->nchild; j++)
+					{
+						size_t ij = *((size_t *)t->taxons[i]->extra+j);
+						t->taxons[i]->children[j] = t->taxons[ij];
+						t->taxons[ij]->parent     = t->taxons[i];
+					}
+					GDL_FREE (t->taxons[i]->extra);
+				}
+			}
+			// Get the index of the root
+			status = fread (&j, sizeof(size_t), 1, stream);
+			GDL_FREAD_STATUS (status, 1);
+			t->root = t->taxons[j];
+		}
+
+		// Euler + RMQ
+		status = fread (&(has), sizeof(unsigned char), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+		if (has == 'y')
+		{
+			size_t m= (size_t)floor(log(2*t->ntaxon-1)/log(2));
+
+			_mgx_taxonomy_euler_tour_alloc (t);
+			_mgx_taxonomy_rmq_alloc (t, t->ntaxon*2-1);
+			status = fread (t->E, sizeof(size_t), t->ntaxon*2-1, stream);
+			GDL_FREAD_STATUS (status, t->ntaxon*2-1);
+			status = fread (t->L, sizeof(size_t), t->ntaxon*2-1, stream);
+			GDL_FREAD_STATUS (status, t->ntaxon*2-1);
+			status = fread (t->H, sizeof(size_t), t->ntaxon, stream);
+			GDL_FREAD_STATUS (status, t->ntaxon);
+			for(i = 0; i < t->ntaxon*2-1; i++)
+			{
+				status = fread (t->M[i], sizeof(size_t), m, stream);
+				GDL_FREAD_STATUS (status, m);
+			}
+		}
+
+		return t;
+	}
+}
+
+int
+mgx_taxonomy_fwrite (FILE * stream, const mgx_taxonomy * t)
+{
+	if (stream && t)
+	{
+		int status;
+		unsigned char has;
+		size_t i;
+
+		status = fwrite (&(t->ntaxon), sizeof(size_t), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		status = fwrite (&(t->noid), sizeof(size_t), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		status = fwrite (&(t->n_taxid2index), sizeof(size_t), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		if (t->n_taxid2index)
+		{
+			status = fwrite (t->taxid2index, sizeof(size_t), t->n_taxid2index, stream);
+			GDL_FWRITE_STATUS (status, t->n_taxid2index);
+		}
+		// Ranks
+		has = (t->ranks) ? 'y' : 'n';
+		status = fwrite (&(has), sizeof(unsigned char), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		if (has=='y')
+		{
+			status = mgx_taxonomy_rank_fwrite (stream, t->ranks, t->ntaxon);
+			GDL_FWRITE_STATUS (status, GDL_SUCCESS);
+		}
+		// Taxons
+		if (t->ntaxon)
+		{
+			for(i = 0; i < t->ntaxon; i++)
+			{
+				status = mgx_taxon_fwrite (stream, t->taxons[i]);
+				GDL_FWRITE_STATUS (status, GDL_SUCCESS);
+			}
+			status = fwrite (&(t->root->index), sizeof(size_t), 1, stream);
+			GDL_FWRITE_STATUS (status, 1);
+		}
+		// Euler + RMQ
+		has = (t->E) ? 'y' : 'n';
+		status = fwrite (&(has), sizeof(unsigned char), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		if (has == 'y')
+		{
+
+			size_t m= (size_t)floor(log(2*t->ntaxon-1)/log(2));
+
+			status = fwrite (t->E, sizeof(size_t), t->ntaxon*2-1, stream);
+			GDL_FWRITE_STATUS (status, t->ntaxon*2-1);
+			status = fwrite (t->L, sizeof(size_t), t->ntaxon*2-1, stream);
+			GDL_FWRITE_STATUS (status, t->ntaxon*2-1);
+			status = fwrite (t->H, sizeof(size_t), t->ntaxon, stream);
+			GDL_FWRITE_STATUS (status, t->ntaxon);
+			for(i = 0; i < t->ntaxon*2-1; i++)
+			{
+				status = fwrite (t->M[i], sizeof(size_t),m, stream);
+				GDL_FWRITE_STATUS (status, m);
+			}
+		}
+
+		return GDL_SUCCESS;
+	}
+
+	return GDL_EINVAL;
+}
+
+void
+mgx_taxonomy_dfs_index (mgx_taxonomy * t){
+
+	int dfs_cptr;
+	int taxon_index;
+
+	// initialize recursion
+	dfs_cptr = -1;
+	taxon_index = t->root->index;
+	// launch recursion
+	mgx_taxonomy_dfs_index_build(t, taxon_index, &dfs_cptr);
+}
+
+void mgx_taxonomy_dfs_index_build(mgx_taxonomy * t, int taxon_id, int * cptr){
+
+	int i;
+
+	// update dfs_index
+	*cptr +=1;
+	t->taxons[taxon_id]->dfs_index = *cptr;
+		//printf("\t\t- taxon : %s --> dfs index = %d\n", t->taxons[taxon_id]->names[0], t->taxons[taxon_id]->dfs_index); fflush(stdout);
+	// recursive call
+	for(i=0;i<t->taxons[taxon_id]->nchild;i++){
+		mgx_taxonomy_dfs_index_build(t, t->taxons[taxon_id]->children[i]->index, cptr);
+	}
+}
+
+void mgx_taxonomy_max_depth (mgx_taxonomy * taxo){
+	int i, max_depth;
+	max_depth=0;
+	for(i=0;i<taxo->ntaxon;i++){
+		if(taxo->taxons[i]->depth>max_depth){
+			max_depth=taxo->taxons[i]->depth;
+		}
+	}
+	taxo->maxdepth=max_depth;
+}
+
+void mgx_taxonomy_max_degree (mgx_taxonomy * taxo){
+	int i, max_degree;
+	max_degree=0;
+	for(i=0;i<taxo->ntaxon;i++){
+		if(taxo->taxons[i]->nchild > max_degree){
+			max_degree=taxo->taxons[i]->nchild;
+		}
+	}
+	taxo->maxdegree=max_degree;
+}
+
+
+void mgx_taxonomy_update_depth(mgx_taxonomy * t, int taxon_id){
+	size_t i;
+	for(i = 0; i < t->taxons[taxon_id]->nchild; i++){
+		// update depth
+		t->taxons[taxon_id]->children[i]->depth = t->taxons[taxon_id]->depth + 1;
+		// recursive call
+		mgx_taxonomy_update_depth(t, t->taxons[taxon_id]->children[i]->index);
+	}
+}
+
+
+/*==================================================================
+ *
+ * FACTORY
+ *
+ *==================================================================*/
+
+const mgx_taxonomy_factory *
+mgx_taxonomy_factory_lookup (const gdl_string * taxo_name)
+{
+	if (!strcmp(taxo_name, mgx_taxonomy_ncbi_factory->name))
+	{
+		return mgx_taxonomy_ncbi_factory;
+	}
+	else if (!strcmp(taxo_name, mgx_taxonomy_simple_factory->name))
+	{
+		return mgx_taxonomy_simple_factory;
+	}
+	return 0;
+}
+
+/*==================================================================
+ *
+ * RANK
+ *
+ *==================================================================*/
+
+mgx_taxonomy_rank *
+mgx_taxonomy_rank_alloc (const size_t n, const size_t m)
+{
+	mgx_taxonomy_rank * r;
+
+	r = GDL_MALLOC (mgx_taxonomy_rank, 1);
+
+	r->nrank      = n;
+	r->rank_names = GDL_MALLOC (gdl_string *, n);
+	r->rid2tx     = GDL_MALLOC (size_t, m);
+
+	return r;
+}
+
+void
+mgx_taxonomy_rank_free (mgx_taxonomy_rank * r)
+{
+	if (r)
+	{
+		size_t i;
+		for(i = 0; i < r->nrank; i++)
+		{
+			gdl_string_free (r->rank_names[i]);
+		}
+		GDL_FREE (r->rank_names);
+		GDL_FREE (r->rid2tx);
+		GDL_FREE (r);
+	}
+}
+
+void
+mgx_taxonomy_rank_init (mgx_taxonomy_rank * r, gdl_hashtable * rank_buffer)
+{
+	gdl_hashtable_itr * itr = gdl_hashtable_iterator (rank_buffer);
+	do
+	{
+		const gdl_string * rank_name = gdl_hashtable_iterator_key (itr);
+		const size_t * rank_idx      = gdl_hashtable_iterator_value (itr);
+		r->rank_names[*rank_idx]     = gdl_string_clone (rank_name);
+	}
+	while (gdl_hashtable_iterator_next (itr));
+	gdl_hashtable_iterator_free (itr);
+}
+
+mgx_taxonomy_rank *
+mgx_taxonomy_rank_fread (FILE * stream, const size_t ntaxon)
+{
+	if (stream && ntaxon)
+	{
+		int status;
+		size_t i;
+		mgx_taxonomy_rank * r;
+
+		r = GDL_CALLOC (mgx_taxonomy_rank, 1);
+
+		status = fread (&(r->nrank), sizeof(size_t), 1, stream);
+		GDL_FREAD_STATUS (status, 1);
+
+		if (r->nrank)
+		{
+			r->rank_names = GDL_MALLOC (gdl_string *, r->nrank);
+			for(i = 0; i < r->nrank; i++)
+			{
+				r->rank_names[i] = gdl_string_fread (stream);
+				GDL_FREAD_STATUS (r->rank_names[i]!=0, 1);
+			}
+		}
+
+		r->rid2tx = GDL_MALLOC (size_t, ntaxon);
+		status = fread (r->rid2tx, sizeof(size_t), ntaxon, stream);
+		GDL_FREAD_STATUS (status, ntaxon);
+
+		return r;
+	}
+
+	return 0;
+}
+
+int
+mgx_taxonomy_rank_fwrite (FILE * stream, const mgx_taxonomy_rank * r, const size_t ntaxon)
+{
+	if ((stream && ntaxon) && r)
+	{
+		int status;
+		size_t i;
+
+		status = fwrite (&(r->nrank), sizeof(size_t), 1, stream);
+		GDL_FWRITE_STATUS (status, 1);
+		if (r->nrank)
+		{
+			for(i = 0; i < r->nrank; i++)
+			{
+				status = gdl_string_fwrite (stream, r->rank_names[i]);
+				GDL_FWRITE_STATUS (status, GDL_SUCCESS);
+			}
+		}
+		status = fwrite (r->rid2tx, sizeof(size_t), ntaxon, stream);
+		GDL_FWRITE_STATUS (status, ntaxon);
+
+		return GDL_SUCCESS;
+	}
+
+	return GDL_EINVAL;
+}

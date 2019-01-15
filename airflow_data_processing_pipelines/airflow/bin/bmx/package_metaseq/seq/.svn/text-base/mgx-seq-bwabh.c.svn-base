@@ -1,0 +1,923 @@
+/*
+ *  mgx-bwabh.c
+ *
+ *  $Author: tournoum $, $Date: 2011/12/01 09:24:13 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+
+ /**
+ * \file mgx-bwabh.c
+ * \brief This program reports the best gi (genome id) from a sam alignment obtained with bwa, bwa-sw or mozaik.
+ * When there are alternative hits (eg when using bwa), the program retrieve all the hits with
+ * minimal edit distance. The mode parameter might be useful when using paired-end reads (except for bwa-sw). Indeed,
+ * when mode = 1, the program retrieves best hits for each pairs of reads; when mode=0, the program
+ * retrieves best hits for each read. For an alignment obtained with bwa or mozaik, you can use alt =1 if you
+ * want to consider the alternative hits or 0 otherwise. For an alignment obtained with bwa-sw, you can save reads with
+ * 0 alignment quality scores or duplicated hits in 2 independent files.
+ * \author Maud Tournoud
+ * \version 1.1
+ * \date May 12 2011
+ *
+ */
+
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_list.h>
+#include <gdl/gdl_hash.h>
+
+// mixgenomix headers
+#include <ext/bam/sam.h>
+#include <utils/gzutil.h>
+
+#include "mixgenomix.h"
+
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-bwabh";
+
+static int help_flag = 0;
+static int verbose_flag = 0;
+static int bwasw_flag = 0;
+static int bwaswAS_flag = 0;
+static int readLength_flag = 0;
+static int full_hit_name_flag = 0; // if flag set to 1, do not try to parse the hit name to retrieve the gi
+static int stringent_pairs_flag = 0; // if flag set to 1, output pairs only if paired reads are mapped in proper pair (both reads are mapped on the
+									// same reference with correct insert size
+
+static gdl_string * INPUT = NULL; // name of the input SAM file
+static gdl_string * OUTPUT = NULL; // name of the file to save the hits (for bwa-sw only single hits with non-null mapping quality scores)
+static gdl_string * OUTPUT_NULL_SCORE =NULL; // name of the file to save the hits with null mapping quality scores
+static gdl_string * OUTPUT_CHIMERIC =NULL; // name of the file to save the multiple hits obtained with bwa-sw
+static gdl_string * SEPARATOR_PAIRED_READS =NULL; // separator for the paired reads names; usually "/", ie. nameOfPair/1 and nameOfPair/2
+static int MODE       = 0; // best hits for each read
+static int ALT       = 1; // find best hits among alternative alignment
+static int DELTA_ED =0; // we retrieve only the hits with best scores
+
+static struct option long_options[] = {
+/* These options set a flag. */
+{ "help", no_argument, &help_flag, 1 },
+{ "verbose", no_argument, &verbose_flag, 1 },
+{ "brief", no_argument, &verbose_flag, 2 },
+{ "bwa-sw", no_argument, &bwasw_flag, 1 },
+{"bwa-sw-AS",no_argument, &bwaswAS_flag, 1},
+{"read-length",no_argument, &readLength_flag, 1},
+{"full-hit-name",no_argument, &full_hit_name_flag, 1},
+{"stringent-pairs",no_argument, &stringent_pairs_flag, 1},
+/* These options don't set a flag.
+ We distinguish them by their indices. */
+{ "output", required_argument, 0, 'o' },
+{ "input", required_argument, 0, 'i' },
+{"mode",   required_argument, 0, 'm'},
+{"alt",   required_argument, 0, 'a'},
+{"output-null-score",required_argument, 0, 'n'},
+{"output-chimeric",required_argument, 0, 'c'},
+{"delta-ed",required_argument, 0, 'd'},
+{"sep-pairs",required_argument, 0, 's'},
+{ 0, 0, 0, 0 } };
+
+
+/**
+ * \fn static int parse_argument(int argc, char *argv[])
+ * \brief This function parses the function arguments.
+ *
+ * \param argc
+ * \param argv
+ * \return a success indicator
+ */
+static int parse_argument(int argc, char *argv[]) {
+	int c;
+	while (1) {
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+		c = getopt_long(argc, argv, "i:o:m:a:n:c:d:s:", long_options, &option_index);
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+		switch (c) {
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf("option %s", long_options[option_index].name);
+			if (optarg)
+				printf(" with arg %s", optarg);
+			printf("\n");
+			break;
+		case 'i':
+			INPUT = gdl_string_clone(optarg);
+			break;
+		case 'o':
+			OUTPUT = gdl_string_clone(optarg);
+			break;
+		case 'm':
+				   MODE= (int) atoi (optarg);
+			break;
+		case 'a':
+				   ALT= (int) atoi (optarg);
+			break;
+		case 'd':
+				   DELTA_ED= (int) atoi (optarg);
+			break;
+		case 'n':
+				  OUTPUT_NULL_SCORE= gdl_string_clone(optarg);
+			break;
+		case 'c':
+				  OUTPUT_CHIMERIC= gdl_string_clone(optarg);
+	        break;
+		case 's':
+				SEPARATOR_PAIRED_READS= gdl_string_clone(optarg);
+			        break;
+		case '?':
+			GDL_ERROR_VAL("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+/**
+ * \fn static int check_argument(void)
+ * \brief This function checks the main function arguments.
+ * \return a success indicator
+ */
+static int check_argument(void) {
+	if (INPUT == 0) {
+		GDL_ERROR_VAL("No input file provided", GDL_FAILURE, 1);
+	}
+	if (OUTPUT == 0) {
+		GDL_ERROR_VAL("No output file provided", GDL_FAILURE, 1);
+	}
+	return GDL_SUCCESS;
+}
+
+/**
+ * \fn static int help(void)
+ * \brief This function prints the help
+ */
+static int help(void) {
+	print_header(PROGRAM);
+	printf("\n");
+	printf("--help\tDisplay a brief help on program usage\n");
+	printf("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf("\n");
+	printf("--input or -i\tA sam or a bam file\n");
+	printf("--output or -o\tThe output file\n");
+	printf("--output or -n\tThe output file to save the hits with null mapping quality score (bwa-sw only)\n");
+	printf("--output or -c\tThe output file to save multiple hits (corresponding in theory to chimeric reads) (bwa-sw only)\n");
+	printf("--mode or -m\t the mode: 1 if you desire best hits for each pair of reads, and 0 if you desire best hits for each read => should be used for sam alignments\n");
+	printf("--alt or -a\t  1 if you desire find best hits among alternative alignment, and 0 if you to use only the best hit\n");
+	printf("--bwa-sw\t  Alignment obtained with bwa-sw (long reads). The function will create an output file to store independently"
+			"the reads with a zero alignment quality score, and duplicated hits.\n");
+	printf("--bwa-sw-AS\t  Alignment obtained with bwa-sw (long reads). The function will the alignment scores in an additional column.\n");
+	printf("--full-hit-name\t  Use this flag if the entire subject sequence name has to be reported\n");
+
+}
+
+
+
+/**
+ * \fn static char * get_prefix(char * qname)
+ * \brief This function returns the prefix of a query read
+ * \param qname name of the read to be evaluated. The format of the read name should be: "prefix.suffix"
+ * \return the predix of the query read
+ */
+char * get_prefix(char * qname)
+{
+	int i;
+	size_t n = strlen(qname);
+	for (i = n - 1; i >= 0; i--) {
+			if (qname[i] == '.') {
+				break;
+			}
+		}
+	gdl_string * prefix=gdl_string_alloc(i);
+	prefix=strncpy(prefix, qname, i);
+	return prefix;
+}
+
+/**
+ * \fn static int check_name_or_prefix(const gdl_string * qname, gdl_string ** prefix)
+ * \brief This function checks whether the prefix of read identified by its qname and the current prefix name are the same.
+ * It can also checks whether the read name identified by qname and the current read name are equal.
+ *
+ * \param qname name of the read to be evaluated. The format of the read name should be: "prefix pairsSeparator suffix"
+ * \param prefix current prefix or entire current read name; to be compared to the prefix of the read name
+ * to the read name directly
+ * \param checkPrefix:  if 1 the function will compare the prefix of qname and prefix, otherwise, it will
+ * compare qname and prefix directily.
+ * \return a success indicator. If the prefix of the read equals to the prefix, the function returns 0 and the pointer is not modified.
+ * If the predix of the read and the prefix are different, the function returns 1 and the pointee recieves the prefix of the read.
+ */
+static int check_name_or_prefix(const gdl_string * qname, gdl_string ** prefix, int checkPrefix, const gdl_string * pairsSeparator) {
+	size_t n = strlen(qname);
+	int i, j;
+
+	//printf("qname : %s \n",qname);
+	//printf("prefix : %s \n",*prefix);
+	if(checkPrefix ==1)
+	{
+	// Look for the first . starting from the end
+		for (i = n - 1; i >= 0; i--) {
+			//if (qname[i] == '.') {
+			if (qname[i] == pairsSeparator[0]) {
+				break;
+			}
+		}
+	}
+	else i=n;
+	if (*prefix != 0) {
+		// compare the 2 strings: *prefix and qname up to character i
+		// a 0 value indicates that the characters compared in both strings are equal
+		if (!strncmp(*prefix, qname, i) &&  strlen(*prefix)==i) {
+		//	printf("prefix %s and qname %s are identical \n",*prefix,qname);
+			return 0;
+		}
+		GDL_FREE(*prefix);
+	}
+
+	*prefix = gdl_string_alloc(i);
+	strncpy(*prefix, qname, i);
+	return 1;
+}
+
+
+/**
+ * \fn char * get_bestHitGI(const char * bestHitName, char * result)
+ * \brief This function extracts the gi from the best hit name. The bestHitName is assumed to have the following format:
+ * gi|218888746|ref|NC_011770.1|. So the gi is between the first | and the second  | .
+ *
+ * \param bestHitName bestHitName from which to extract the gi. The format of the bestHitName is: "gi|218888746|ref|NC_011770.1|".
+ * \param result pointer to the gi
+ * \return the modified pointer to the gi
+ */
+
+// we assume that the bestHitName has the following format: gi|218888746|ref|NC_011770.1|
+char * get_bestHitGI(char * bestHitName, char * result) {
+	// look for the 2 | separators
+	int n = strlen(bestHitName);
+	int i = 0;
+	int firstSep = 0;
+	int secondSep = 0;
+	char * tmp = bestHitName;
+	int giLength = 0;
+	// looking for the first separator
+	for (i = 0; i < n; i++) {
+		if (bestHitName[i] == '|') {
+			break;
+		}
+	}
+	firstSep = i;
+	// sanity check
+	if (firstSep == (n - 1)) {
+		fprintf(
+				stdout,
+				"error in get_bestHitGI for bestHitName %s : cannot find first separator | \n",
+				bestHitName);
+		return (0);
+	}
+	// looking for the second separator
+	for (i = (firstSep + 1); i < n; i++) {
+		if (bestHitName[i] == '|') {
+			break;
+		}
+	}
+	secondSep = i;
+	// sanity check
+	if (secondSep == (n - 1)) {
+		fprintf(
+				stdout,
+				"error in get_bestHitGI for bestHitName %s : cannot find second separator | \n",
+				bestHitName);
+		return (0);
+	}
+	giLength = secondSep - firstSep - 1;
+	if (result != 0) {
+		GDL_FREE(result);
+	}
+	result = gdl_string_alloc(giLength);
+	tmp = bestHitName + firstSep + 1;
+	strncpy(result, tmp, giLength);
+	return result;
+}
+
+/**
+ * \fn int get_ed(const char * alt_1)
+ * \brief This function extracts the edit distance (ed) from a single alternative hit (from the field XA). The alternative hit
+ * is assumed to have the following format: Zgi|218888746|ref|NC_011770.1|,-1226123,100M,3. The edit distance to be extracted
+ * is the last figure.
+ *
+ * \param alt_1 alternative hit (see above for format description)
+ * \return the edit distance
+ */
+
+int get_ed(const char * alt_1) {
+	int i = 0;
+	int ed = 0;
+	int n = strlen(alt_1);
+	int end = n;
+
+	// find the first "," from the end of alt_1
+	for (i = n - 1; i >= 0; i--) {
+		if (alt_1[i] == ',') {
+			if (i == n - 1)
+				end = i;
+			else
+				break;
+		}
+	}
+
+	char * charED = 0;
+	charED = gdl_string_alloc(end);
+	charED = strncpy(charED, alt_1 + i + 1, end);
+	ed = atoi(charED);
+	GDL_FREE(charED);
+	return ed;
+}
+
+/**
+ * \fn int nbAlternativeHits(char * alt)
+ * \brief This function computes the number of alternative hits. Alternative hits are retrieved from the field XA and are
+ * separated by a ";".
+
+ * \param alt alternative hits (see above for format description)
+ * \return the number of alternative hits
+ */
+int nbAlternativeHits(char * alt) {
+	int n = strlen(alt);
+	int i = 0;
+	int nbAltHits = 0;
+	for (i = 0; i < n; i++) {
+		if (alt[i] == ';') {
+			nbAltHits++;
+		}
+	}
+	if(alt[n-1] != ';') nbAltHits++;
+	return nbAltHits;
+}
+
+/**
+ * \fn gdl_list* splitAltHit(char *alt, gdl_list * listGoodGI, int bestHitED)
+ * \brief This function extracts the gi of the best alternative hits. Best alternative hits should have an edit distance
+ * inferior or equal to the edit distance of the best hit.
+
+ * \param alt alternative hits. Alternative hits are retrieved from the field XA and are separated by a ";".
+ * \param listGoodGI a pointer to the list of gi for the best alternative hits that should be returned.
+ * \param bestHitED edit distance of the best hit
+ * \return a pointer to the list of gi for the best alternative hits.
+ */
+gdl_list*
+splitAltHit(char *alt, gdl_list * listGoodGI, int bestHitED) {
+
+	gdl_list * listAltGI = gdl_list_alloc(gdl_list_default); // list with the gi values for the alternative hits
+	gdl_list * listAltED = gdl_list_alloc(gdl_interface_int); // list with the ed values for the alternative hits
+
+	if (listGoodGI == 0)
+		listGoodGI = gdl_list_alloc(gdl_list_default);
+	else
+		gdl_list_clear(listGoodGI); // clear the list if not null
+
+	int i = 0;
+        int j;
+	int ed = 0;
+	int n = strlen(alt);
+	int start = 0;
+	int currentAltLength = 0;
+	char* currentAlt = 0;
+	char * tmp = 0;
+	int * currentED = 0;
+	gdl_list_itr *itr = 0;
+	gdl_list_itr *itr_ed = 0;
+	gdl_list_itr *itr_gi = 0;
+
+	// extract all the alternative hits from alt; put each alternative hit in the list listAltGI and
+	// each alternative edit distance in the list listAltED
+	for (i = 0; i < n; i++) {
+		if (*(alt + i) == ';') {
+			// extract alternative hit
+			currentAltLength = i - start;
+			currentAlt = gdl_string_alloc(currentAltLength);
+			tmp = alt + start;
+			currentAlt=strncpy(currentAlt, tmp, currentAltLength);
+			start = i;
+			// extract GI
+			char * currentAltGI = 0;
+                        //if (no_parse_hit_name_flag) {
+                        if(full_hit_name_flag) {
+                           for(j=0;j<strlen(currentAlt);j++) {
+                              if (currentAlt[j]==',') break;
+                           }
+			   currentAltGI = gdl_string_alloc (j-1);
+                           strncpy(currentAltGI, currentAlt+1, j-1); // ignore the Z suffix
+                        } else {
+			   currentAltGI = get_bestHitGI(currentAlt, currentAltGI);
+                        }
+			// add the GI to the GI list
+			gdl_list_push_back(listAltGI, currentAltGI, 0);
+			// extract edit distance
+			int * ped = GDL_MALLOC (int, 1);
+			*ped = get_ed(currentAlt);
+			// add the ed pointeur to the ED list
+			gdl_list_push_back(listAltED, ped, 0);
+			// add distance to the distance list
+			GDL_FREE(currentAlt);
+		}
+	}
+
+	//GDL_FREE(tmp);
+
+	// check that the 2 lists (ed and gi) have the same size
+	if (gdl_list_size(listAltGI) != gdl_list_size(listAltED))
+	{
+		printf("Error in splitAltHit: problem with the list sizes \n");
+		return 0;
+	}
+
+	// loop on the list to find the gi corresponding to the bestHitED; put them into the returned list (listGoodGI)
+	itr_ed = gdl_list_iterator_front(listAltED);
+	itr_gi = gdl_list_iterator_front(listAltGI);
+	do {
+		currentED = (int *) gdl_list_iterator_value(itr_ed);
+		if (*currentED <= bestHitED) {
+			gdl_list_push_back(listGoodGI, (char *) gdl_list_iterator_value(
+					itr_gi), 0);
+		}
+	} while (gdl_list_iterator_next(itr_ed) && gdl_list_iterator_next(itr_gi));
+
+	// freeing everything
+	gdl_list_iterator_free(itr_ed);
+	gdl_list_iterator_free(itr_gi);
+	gdl_list_free(listAltGI);
+	gdl_list_free(listAltED);
+	//GDL_FREE(currentED);
+	return listGoodGI;
+}
+
+
+/**
+ * \fn static int pr_filtering_bwa_sw(gdl_list * pr_buffer, char **target_name, int32_t n_targets, int mode, FILE * stream,, FILE * streamOutputNullMappQuality,FILE * streamOutputChimeric, int bwaswAS_flag)
+ * \brief This function extracts the bestGI from a list of alignments.
+
+ * \param pr_buffer pointer to a list of bam_1t
+ * \param target_name names of the reference sequences
+ * \param n_targets number of targets identified in the sam header
+ * \param stream pointer to the outputfile
+ * \param streamOutputNullMappQuality pointer to the outputfile that stores the read and hits with zero alignment quality score
+ * \param streamOutputChimeric pointer to the outputfile that stores the read with multiple hits
+ * \param bwaswAS_flag if 1, the programs outputs alignment score with best hits
+ *
+ * \return a success indicator
+ */
+static int pr_filtering_bwa_sw(gdl_list * pr_buffer, char **target_name,
+		int32_t n_targets, FILE * stream, FILE * streamOutputNullMappQuality,FILE * streamOutputChimeric, int bwaswAS_flag, int readLength_flag) {
+
+	int minAS = 0;
+	size_t i, n;
+	i = 0;
+	gdl_list_itr * itr;
+	int mappingQuality = 0;
+	bam1_t ** bamAligns; // table of  bam1_t
+	int bestHitIdx = 0;
+	char ** bestHitName = 0;
+	char * bestHitGI = 0;
+	//int multiple = 0;
+	// Create a table of alignments
+	n = gdl_list_size(pr_buffer);
+	bamAligns = GDL_MALLOC (bam1_t *, n);
+	itr = gdl_list_iterator_front(pr_buffer);
+	// filling the table with the list values
+	do {
+		bamAligns[i++] = (bam1_t *) gdl_list_iterator_value(itr);
+	} while (gdl_list_iterator_next(itr));
+	gdl_list_iterator_free(itr);
+
+
+	// first, we have to find the largest alignment score among all the alignments.
+	// create a vector of edit distance for the best hits
+	int EDtable[n];
+	int bestHitOK[n];
+	for (i = 0; i < n; i++) {
+		// first check the existence of a bestHit in the alignment
+		//multiple = ((int) (bamAligns[i]->core).flag) / 16;
+		//int reste = (bamAligns[i]->core).flag - 16* multiple ;
+		//if (reste == 4 || reste == 5 || reste == 6 || reste == 7 || reste == 12
+		//		|| reste == 13 || reste == 14 || reste == 15) {
+		int32_t is_mapped = ((bamAligns[i]->core.flag&BAM_FUNMAP)==0);
+		if (!is_mapped) {
+			bestHitOK[i] = 0;
+			EDtable[i] = minAS;
+		} else {
+			bestHitOK[i] = 1;
+			EDtable[i] = bam_aux2i(bam_aux_get(bamAligns[i], "AS"));
+
+		}
+	}
+	for (i = 0; i < n; i++) {
+
+		// retrieve the score from the MAPQ field ; if 0 this means
+		// that there are alternative hits with equal score (AS)
+		// In this case, put the read in a separate file for example for Mozaik processing
+		mappingQuality = (int) ((bamAligns[i]->core).qual);
+
+		// check if the read has a valid hit using the flag and if it has the best alignment score
+		if (bestHitOK[i] == 1)
+		{
+			// retrieve the best hit gi
+			bestHitIdx = (int) ((bamAligns[i]->core).tid);
+			bestHitName = target_name + bestHitIdx;
+			// get the corresponding gi
+                        if (full_hit_name_flag) {
+			   bestHitGI = *bestHitName;
+                        } else {
+			   bestHitGI = get_bestHitGI(*bestHitName, bestHitGI);
+                        }
+			if(n>1) // more than 1 hit
+			{
+				if(streamOutputChimeric)
+				{
+					fprintf(streamOutputChimeric, "%s\t", bamAligns[0]->data);
+					fprintf(streamOutputChimeric, "%s", bestHitGI);
+					if (bwaswAS_flag==1) fprintf(streamOutputChimeric, "\t%d",EDtable[i]);
+					if (readLength_flag==1) fprintf(streamOutputChimeric, "\t%d",(int) ((bamAligns[i]->core).l_qseq));
+					fprintf(streamOutputChimeric,"\n");
+				}
+
+				else
+				{
+					fprintf(stream, "%s\t", bamAligns[0]->data);
+					fprintf(stream, "%s", bestHitGI);
+					if(bwaswAS_flag==1) fprintf(stream, "\t%d", EDtable[i]);
+					if(readLength_flag==1) fprintf(stream, "\t%d", (int) ((bamAligns[i]->core).l_qseq));
+					fprintf(stream,"\n");
+				}
+			}
+
+			else if (mappingQuality==0) {
+
+				if(streamOutputNullMappQuality)
+				{
+					fprintf(streamOutputNullMappQuality, "%s\t", bamAligns[0]->data);
+					fprintf(streamOutputNullMappQuality, "%s", bestHitGI);
+					if (bwaswAS_flag==1) fprintf(streamOutputNullMappQuality, "\t%d",EDtable[i]);
+					if (readLength_flag==1) fprintf(streamOutputNullMappQuality, "\t%d",(int) ((bamAligns[i]->core).l_qseq));
+					fprintf(streamOutputNullMappQuality,"\n");
+				}
+
+				else
+				{
+					fprintf(stream, "%s\t", bamAligns[0]->data);
+					fprintf(stream, "%s", bestHitGI);
+					if(bwaswAS_flag==1) fprintf(stream, "\t%d", EDtable[i]);
+					if(readLength_flag==1) fprintf(stream, "\t%d", (int) ((bamAligns[i]->core).l_qseq));
+					fprintf(stream,"\n");
+				}
+			}
+			else
+			{
+				fprintf(stream, "%s\t", bamAligns[0]->data);
+				fprintf(stream, "%s", bestHitGI);
+				if(bwaswAS_flag==1) fprintf(stream, "\t%d", EDtable[i]);
+				if(readLength_flag==1) fprintf(stream, "\t%d", (int) ((bamAligns[i]->core).l_qseq));
+				fprintf(stream,"\n");
+			}
+		}
+	}
+	// Clean alignments
+	for (i = 0; i < n; i++) {
+		bam_destroy1(bamAligns[i]);
+	}
+	GDL_FREE(bamAligns);
+}
+
+
+
+
+
+
+
+
+/**
+ * \fn static int pr_filtering(gdl_list * pr_buffer, char **target_name, int32_t n_targets, int mode, FILE * stream)
+ * \brief This function extracts the bestGI from a list of alignments.
+
+ * \param pr_buffer pointer to a list of bam_1t
+ * \param target_name names of the reference sequences
+ * \param n_targets number of targets identified in the sam header
+ * \param stream pointer to the outputfile
+ *  \param getAlt if 0 returns only the best Hit for each alignment, otherwise try to find other best hits among alternative hits.
+ *  \param stream outputfile
+ *  \param deltaED to be more permissive when retrieving best hits: difference tolerated between minimum edit distance (best hits) and possible alternative best hits.
+ * \return a success indicator
+ */
+static int pr_filtering(gdl_list * pr_buffer, char **target_name,
+		int32_t n_targets, FILE * stream, int getAlt, int deltaED) {
+
+	//printf("entering pr_filtering \n");
+
+
+
+	int maxED = 10000000;
+	size_t i, j, n;
+	i = 0;
+	gdl_list_itr * itr;
+	gdl_hashtable * gid_table; // hashtable with the name of the gi as index
+	bam1_t ** bamAligns; // table of  bam1_t
+	int bestHitIdx = 0;
+	char ** bestHitName = 0;
+	char * bestHitGI = 0;
+	gdl_list * listGoodGI = 0;
+	//int multiple = 0;
+	// Create a table of alignments
+	n = gdl_list_size(pr_buffer);
+	bamAligns = GDL_MALLOC (bam1_t *, n);
+	itr = gdl_list_iterator_front(pr_buffer);
+
+	// filling the table with the list values
+	do {
+		bamAligns[i++] = (bam1_t *) gdl_list_iterator_value(itr);
+	} while (gdl_list_iterator_next(itr));
+	gdl_list_iterator_free(itr);
+
+	//printf("There are %d alignments in the table \n",i);
+	// first, we have to find the minimum of the edit distances among all the alignments.
+	// create a vector of edit distance for the best hits
+	int EDtable[n];
+	int bestHitOK[n];
+	for (i = 0; i < n; i++) {
+		// first check the existance of a bestHit in the alignment
+
+		//multiple = ((int) (bamAligns[i]->core).flag) / 16;
+		//int reste = (bamAligns[i]->core).flag - 16* multiple ; // remove all reads with 4 flag
+		// (reste == 4 || reste == 5 || reste == 6 || reste == 7 || reste == 12
+		//	|| reste == 13 || reste == 14 || reste == 15) {
+		int32_t is_mapped = ((bamAligns[i]->core.flag&BAM_FUNMAP)==0);
+		int32_t is_not_mapped_proper = ((bamAligns[i]->core.flag&BAM_FPROPER_PAIR)==0);
+		int32_t is_unpaired = ((bamAligns[i]->core.flag&BAM_FPAIRED)==0);
+
+		if (stringent_pairs_flag && is_unpaired) {
+			printf("cannot used the stringent-pairs option for single reads");
+			return (0);
+		}
+		if( ! stringent_pairs_flag) {
+			if (!is_mapped) {
+				bestHitOK[i] = 0;
+				EDtable[i] = maxED;
+			} else {
+				bestHitOK[i] = 1;
+				EDtable[i] = bam_aux2i(bam_aux_get(bamAligns[i], "NM"));
+			}
+		}
+		else
+		{
+			if (is_not_mapped_proper) {
+				bestHitOK[i] = 0;
+				EDtable[i] = maxED;
+			} else {
+				bestHitOK[i] = 1;
+				EDtable[i] = bam_aux2i(bam_aux_get(bamAligns[i], "NM"));
+			}
+		}
+	}
+
+
+	int minED[1];
+	int result = gdl_sort_int_smallest(minED, 1, EDtable, 1, n);
+	if (result != 0)
+		minED[0] = maxED;
+
+	// mode = 1 => 1 best hit list for each pair of read
+	gid_table = gdl_hashtable_alloc(gdl_hash_default, 0);
+	for (i = 0; i < n; i++) {
+
+		// first, check that there is a valid hit
+		// if not, we put nothing in the hastable of a negative value (something identified as no hit)
+
+		// check if the read has a valid hit using the flag
+		if (bestHitOK[i] == 0) {
+			//fprintf(stdout,"no match for this query \n ");
+
+		} else {
+			// retrieve the best hit, the edit distance
+			bestHitIdx = (int) ((bamAligns[i]->core).tid);
+			bestHitName = target_name + bestHitIdx;
+			// get the corresponding gi
+                        if (full_hit_name_flag) {
+			  bestHitGI = *bestHitName;
+                        } else {
+			  bestHitGI = get_bestHitGI(*bestHitName, bestHitGI);
+                        }
+			// add the best hit to the hash table, if not already in and if edit distance of the hit equals to
+			// the minimum of all the bestHit
+			if (!gdl_hashtable_lookup(gid_table, bestHitGI) && (EDtable[i]- minED[0]) <= deltaED) {
+				//	if(mode ==0) fprintf(stream, "%s ",bestHitGI);
+				gdl_hashtable_add(gid_table, bestHitGI, bamAligns, 0);
+			}
+			// retrieve the alternative hits
+			if (getAlt == 1) {
+				char * alt = 0;
+				alt = bam_aux_get(bamAligns[i], "XA");
+				//printf("alternative hits: %s \n",alt);
+				// if any alternative hits: retrieve the gi of best alternative hits (with edit distance
+				// less or equal to the bestHitED
+				if (alt != 0) {
+					// list of best alternative hits
+					listGoodGI = splitAltHit(alt, listGoodGI, minED[0]+deltaED);
+					// loop on the list and add the alternative best hits to the hashtable
+					if (gdl_list_size(listGoodGI) > 0) {
+
+						itr = gdl_list_iterator_front(listGoodGI);
+						do {
+							char * tmp = (char *) gdl_list_iterator_value(itr);
+							if (gdl_hashtable_lookup(gid_table, tmp)) {
+								continue;
+							} else {
+								// print the gi
+								//if(mode ==0) fprintf(stream, "%s ",tmp);
+								gdl_hashtable_add(gid_table, tmp, bamAligns, 0);
+							}
+						} while (gdl_list_iterator_next(itr));
+						gdl_list_iterator_free(itr);
+					}
+				}
+			}
+
+		}
+	}
+       
+	// print the hash
+	int sizeHash=gdl_hashtable_size(gid_table);
+        if (sizeHash) {
+	   // print the first read name
+	   fprintf(stream, "%s\t", bamAligns[0]->data);
+	   i=0;
+	   if (gdl_hashtable_size(gid_table)) {
+		   gdl_hashtable_itr * itrH = gdl_hashtable_iterator(gid_table);
+		   do {
+			   i=i+1;
+			   if(i<sizeHash) fprintf(stream, "%s;", gdl_hashtable_iterator_key(itrH));
+			   else fprintf(stream, "%s", gdl_hashtable_iterator_key(itrH));
+		   } while (gdl_hashtable_iterator_next(itrH));
+		   gdl_hashtable_iterator_free(itrH);
+	   }
+	   fprintf(stream, "\n");
+        }
+	gdl_hashtable_free(gid_table);
+	// Clean alignments
+	for (i = 0; i < n; i++) {
+		bam_destroy1(bamAligns[i]);
+	}
+	GDL_FREE(bamAligns);
+}
+
+
+/**
+ * \fn int main(int argc, char *argv[])
+ * \brief Main functions. Retrieve the gi of the best hits for an alignment obtained with bwa
+
+ * \param argc
+ * \param argv
+ * \return a success indicator
+ */
+	int main(int argc, char *argv[]) {
+		int status;
+		parse_argument(argc, argv);
+		if (help_flag) {
+			exit(help());
+		}
+
+		status = check_argument();
+
+		if (status == GDL_SUCCESS) {
+
+
+			if(MODE==1)
+			{
+				if(SEPARATOR_PAIRED_READS==0)
+				{
+				// define '.' as a default separator
+					SEPARATOR_PAIRED_READS = gdl_string_alloc(1);
+					SEPARATOR_PAIRED_READS[0] = '.';
+					printf("The separator used is : %s \n", SEPARATOR_PAIRED_READS);
+				}
+				else
+				{
+					printf("The separator used is : %s \n", SEPARATOR_PAIRED_READS);
+				}
+
+			}
+
+
+
+
+			int status;
+			gdl_string * prefix = 0;
+			int bwa_sw = 1;
+
+			bam1_t * bamAlign;
+			gdl_list * pr_buffer = gdl_list_alloc(gdl_list_default);
+			//gdl_runtime * runtime;
+
+			// Load the runtime
+			//runtime = runtime_setup();
+
+			if(bwasw_flag) fprintf(stdout,"bwa sw mode \n");
+
+			// Open the file and initialize the file handler
+			samfile_t * samStream = samopen(INPUT, "r", 0);
+
+			// opening the output file to save the results
+			FILE * streamOutputFile = gdl_fileopen(OUTPUT, "w");
+
+			FILE * streamOutputNullMappQuality = 0;
+			FILE * streamOutputChimeric = 0;
+
+			if(bwasw_flag)
+			{
+				streamOutputNullMappQuality= gdl_fileopen(OUTPUT_NULL_SCORE, "w");
+				streamOutputChimeric= gdl_fileopen(OUTPUT_CHIMERIC, "w");
+
+			}
+
+			// Initialize the pointer to the first alignment
+			bamAlign = bam_init1();
+
+			while (samread(samStream, bamAlign) >= 0) {
+
+				if (check_name_or_prefix(bamAlign->data, &prefix, MODE, SEPARATOR_PAIRED_READS)) {
+					// check_prefixed returned 1 => reads are different or prefix was not allocated
+					// it is time to do something with the current pair and empty the buffer because
+					// a new pair is arriving
+					if (gdl_list_size(pr_buffer) > 0) {
+						if (bwasw_flag == 1) {
+							pr_filtering_bwa_sw(pr_buffer,
+									(samStream->header)->target_name,
+									(samStream->header)->n_targets,
+									streamOutputFile, streamOutputNullMappQuality,streamOutputChimeric,bwaswAS_flag,readLength_flag);
+						}
+
+						else {
+							pr_filtering(pr_buffer,
+									(samStream->header)->target_name,
+									(samStream->header)->n_targets,
+									streamOutputFile, ALT,DELTA_ED);
+						}
+						// Then reset the buffer
+						gdl_list_free(pr_buffer);
+						pr_buffer = gdl_list_alloc(gdl_list_default);
+					}
+				}
+
+				gdl_list_push_back(pr_buffer, bamAlign, 0);
+				bamAlign = bam_init1();
+			}
+			// For the last ones
+			if (bwasw_flag == 1) {
+				pr_filtering_bwa_sw(pr_buffer,
+						(samStream->header)->target_name,
+						(samStream->header)->n_targets, streamOutputFile,
+						streamOutputNullMappQuality,streamOutputChimeric,bwaswAS_flag,readLength_flag);
+
+			} else {
+				pr_filtering(pr_buffer, (samStream->header)->target_name,
+						(samStream->header)->n_targets, streamOutputFile, ALT,DELTA_ED);
+			}
+			gdl_list_free(pr_buffer);
+
+			// Close the stream
+			samclose(samStream);
+			// Save the runtime
+			//runtime_setdown(runtime);
+
+			// close the outputfile strem
+			gdl_fileclose(OUTPUT, streamOutputFile);
+
+			if(bwasw_flag)
+			{
+				gdl_fileclose(OUTPUT, streamOutputNullMappQuality);
+				gdl_fileclose(OUTPUT, streamOutputChimeric);
+
+			}
+
+		}
+
+		//GDL_FREE(SEPARATOR_PAIRED_READS);
+
+		exit(0);
+	}

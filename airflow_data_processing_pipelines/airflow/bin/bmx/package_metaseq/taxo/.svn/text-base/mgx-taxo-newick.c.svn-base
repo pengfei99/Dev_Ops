@@ -1,0 +1,172 @@
+/*
+ *  mgx-taxo2Newick.c
+ *
+ *  $Author: veyriejb $, $Date: 2012/06/12 08:39:33 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2012  DKL Team, bioMérieux, France.
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+#include <ctype.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_io.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_seq_io.h>
+
+#include "mixgenomix.h"
+#include "gzutil.h"
+#include "taxo.h"
+
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-taxo2Newick";
+
+static int help_flag    = 0;
+static int verbose_flag = 0;
+static int taxon_name_flag = 0;
+
+static gdl_string * TAXODB   = NULL;
+static gdl_string * OUTPUT   = NULL;
+
+static struct option long_options[] =
+{
+		/* These options set a flag. */
+		{"help", no_argument,          &help_flag, 1},
+		{"taxon-name", no_argument,          &taxon_name_flag, 1},
+		/* These options don't set a flag.
+      We distinguish them by their indices. */
+		{"taxodb",   required_argument, 0, 't'},
+		{"output",   required_argument, 0, 'o'},
+		{0, 0, 0, 0}
+};
+
+static int
+parse_argument (int argc, char *argv[])
+{
+	int c;
+
+	while (1)
+	{
+
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+
+		c = getopt_long (argc, argv, "o:t:",
+				long_options, &option_index);
+
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+
+		switch (c)
+		{
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf ("option %s", long_options[option_index].name);
+			if (optarg)
+				printf (" with arg %s", optarg);
+			printf ("\n");
+			break;
+		case 'o':
+			OUTPUT = gdl_string_clone (optarg);
+			break;
+		case 't':
+			TAXODB = gdl_string_clone (optarg);
+			break;
+		case '?':
+			GDL_ERROR_VAL ("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL ("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+static int
+check_argument (void)
+{
+	if (OUTPUT == 0)
+	{
+		GDL_ERROR_VAL ("No output file provided",
+				GDL_FAILURE,
+				1);
+	}
+
+	if (TAXODB == 0)
+	{
+		GDL_ERROR_VAL ("No taxonomy database file provided",
+				GDL_FAILURE,
+				1);
+	}
+
+	return GDL_SUCCESS;
+}
+
+
+static int
+help (void)
+{
+	print_header (PROGRAM);
+	printf ("\n");
+	printf ("--help\tDisplay a brief help on program usage\n");
+	printf ("\n");
+	printf ("--taxon-name\tUse this flag to output the taxon name instead of the identifier\n");
+	printf ("\n");
+	printf ("--output or -o\tThe output file (Newick)");
+	printf ("--taxodb or -t\tThe pruned taxonomy database file\n");
+}
+
+int
+main (int argc, char *argv[])
+{
+	int status;
+
+	parse_argument (argc, argv);
+
+	if (help_flag)
+	{
+		exit (help());
+	}
+
+	status = check_argument ();
+
+	if (status == GDL_SUCCESS)
+	{
+		mgx_taxonomy * taxonomy;
+		FILE * stream;
+		size_t i, j;
+		// read taxonomy
+		stream   = gdl_fileopen (TAXODB, "r");
+		taxonomy = mgx_taxonomy_fread (stream);
+		gdl_fileclose (TAXODB, stream);
+
+		printf("Taxo read\n");fflush(stdout);
+
+		//recursive call to mgx-dfsNewick function
+		stream = gdl_fileopen (OUTPUT, "w");
+		mgx_dfsNewick(taxonomy->root,stream,taxon_name_flag);
+		// close output file
+		fprintf(stream,";\n");
+		gdl_fileclose (OUTPUT, stream);
+
+	}
+
+	exit (0);
+}
+
+

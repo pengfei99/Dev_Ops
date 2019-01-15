@@ -1,0 +1,352 @@
+/*
+ *  mgx-gi2taxid.C
+ *
+ *  $Author: tournoum $, $Date: 2011/12/01 09:24:25 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+
+ /**
+ * \file mgx-gi2taxid.c
+ * \brief This program outputs the list of taxids corresponding to a list of gis.
+ * You should provide a file that makes the mapping between gi and taxid
+ * \author Maud Tournoud
+ * \version 1.1
+ * \date May 19 2011
+ *
+ */
+
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_list.h>
+#include <gdl/gdl_hash.h>
+
+#include "mixgenomix.h"
+#include "gzutil.h"
+
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-gi2taxid";
+
+static int help_flag = 0;
+static int verbose_flag = 0;
+static int gionly_flag = 0;
+
+static gdl_string * INPUT_MAP = NULL;
+static gdl_string * INPUT_QUERY = NULL;
+static gdl_string * OUTPUT = NULL;
+
+static struct option long_options[] = {
+/* These options set a flag. */
+{ "help", no_argument, &help_flag, 1 },
+{ "verbose", no_argument, &verbose_flag, 1 },
+{ "brief", no_argument, &verbose_flag, 0 },
+{ "gi-only", no_argument, &gionly_flag, 1 },
+/* These options don't set a flag.
+ We distinguish them by their indices. */
+{ "output", required_argument, 0, 'o' },
+{ "input-map", required_argument, 0, 'm' },
+{ "input-query", required_argument, 0, 'q' },
+{ 0, 0, 0, 0 } };
+
+
+/**
+ * \fn static int parse_argument(int argc, char *argv[])
+ * \brief This function parses the function arguments.
+ *
+ * \param argc
+ * \param argv
+ * \return a success indicator
+ */
+static int parse_argument(int argc, char *argv[]) {
+	int c;
+	while (1) {
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+		c = getopt_long(argc, argv, "m:q:o:", long_options, &option_index);
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+		switch (c) {
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf("option %s", long_options[option_index].name);
+			if (optarg)
+				printf(" with arg %s", optarg);
+			printf("\n");
+			break;
+		case 'm':
+			INPUT_MAP = gdl_string_clone(optarg);
+			break;
+		case 'q':
+			INPUT_QUERY = gdl_string_clone(optarg);
+			break;
+		case 'o':
+			OUTPUT = gdl_string_clone(optarg);
+			break;
+		case '?':
+			GDL_ERROR_VAL("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+/**
+ * \fn static int check_argument(void)
+ * \brief This function checks the main function arguments.
+ * \return a success indicator
+ */
+static int check_argument(void) {
+	if (INPUT_MAP == 0) {
+		GDL_ERROR_VAL("No input mapping file provided", GDL_FAILURE, 1);
+	}
+	if (INPUT_QUERY == 0) {
+			GDL_ERROR_VAL("No input file with best hits provided", GDL_FAILURE, 1);
+		}
+	if (OUTPUT == 0) {
+		GDL_ERROR_VAL("No output file provided", GDL_FAILURE, 1);
+	}
+	return GDL_SUCCESS;
+}
+
+/**
+ * \fn static int help(void)
+ * \brief This function prints the help
+ */
+static int help(void) {
+	print_header(PROGRAM);
+	printf("\n");
+	printf("--help\tDisplay a brief help on program usage\n");
+	printf("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf("\n");
+	printf("--input-map or -m\tA file with the mapping between gi and taxonid; 1 line per gi\n");
+	printf("--input-query or -q\tEach line corresponds to a read name followed by a list of gi hits (separated by ;)\n");
+	printf("--output or -o\tThe output file\n");
+	printf("--gi-only\t If the read name is absent, each line corresponds only to a list of gis (separated by ;)");
+
+}
+
+
+
+
+/*
+ * \fn gdl_hashtable * read_input_mapfile (const gdl_string * input_file)
+ * \brief This function reads the input mapping file that map a gi to a taxon id. It fills a hash table
+ * with key equal to gi and value to taxon. The function returns the hash table
+ *
+ * \param input_file name of the input file that map the gi to the taxon id. There is 1 line per gi and 2 columns. The
+ * first column corresponds to gi and the second column to taxon id. The delimitor is a space  or a tab.
+ * There is no header. The mapping file for all the genomes in the metasim DB can be found here:
+ * /Projet/PRG0023-Technology_Research_Program/B1848-Microbial_Sequencing/Raw_data/bioseq/bMxDB/database/metasim/input-20110301/giToTaxonDB20110428.txt
+ * \return a hash table
+ */
+gdl_hashtable *
+read_input_mapfile (const gdl_string * input_file)
+{
+	FILE * stream;
+	size_t i,j,n;
+	gdl_string * line=0, * tok1, *tok2;
+	gdl_list      * files;
+	gdl_hashtable * buffer;
+
+	stream = gdl_fileopen (input_file, "r");
+
+	buffer = gdl_hashtable_alloc (gdl_hash_default, 0);
+
+	size_t cptr = 0;
+	while(gdl_getline (&line, &n, stream)!=-1)
+	{
+		cptr++;
+		i=j=0;
+		tok1 = gdl_string_next_token (line, n, &i, &j);
+		tok2 = gdl_string_next_token (line, n, &i, &j);
+		if (gdl_hashtable_lookup(buffer, tok1)) {
+			continue;
+		} else {
+			gdl_hashtable_add(buffer, tok1, tok2, 0);
+		}
+
+		gdl_string_free (line);
+		line=0;
+		if(cptr % 100000 == 0){
+			printf("**processing line %d\n", cptr);
+		}
+	}
+	gdl_fileclose (input_file, stream);
+	return buffer;
+}
+
+
+/**
+ * \fn int read_input_query_and_get_taxon (const gdl_string * input_file, gdl_hashtable * gid2taxid_table, FILE * streamOutputFile)
+ * \brief This function reads the input file containing the best hits. Typically, this
+ * file is an output file from lcasam.c. Each line corresponds to a read alignment, with the name of the read
+ *  and the names of the best hits separated with ";". The format of the file is:
+ *  readName	gi1;gi2;gi3. The function that looks up the gi to taxon id hash table and prints
+ *  the taxon ids of each gi best hit.
+ * \param input_file name of the input file that contains the gi of the best hit (see above for a format description)
+ * \param gid2taxid_table hash table that maps the gi to the taxon ids
+ * \param streamOutputFile outputfile
+ * \param GI_ONLY equals 1 if the line contains only the list of gis separated with ";"
+ * \return a success indicator: success=1, failure=0 (in particular when the function did not find any
+ * taxon id for a given gi).
+ */
+
+int read_input_query_and_get_taxon(const gdl_string * input_file,
+		gdl_hashtable * gid2taxid_table, FILE * streamOutputFile, int GI_ONLY) {
+	FILE * stream;
+	size_t i, j, n;
+	gdl_string * line = 0, *tok1, *tok2, *val;
+	gdl_list * files;
+	gdl_hashtable * buffer;
+	int result = 1;
+	gdl_string * del = ";";
+	size_t nbHit = 0;
+	int k;
+	stream = gdl_fileopen(input_file, "r");
+
+	buffer = gdl_hashtable_alloc(gdl_hash_default, 0);
+
+	if (GI_ONLY == 0) // 1 line contains the read name and the gi name
+	{
+		while (gdl_getline(&line, &n, stream) != -1) {
+			i = j = 0;
+
+			tok1 = gdl_string_next_token(line, n, &i, &j);
+			tok2 = gdl_string_next_token(line, n, &i, &j);
+
+			fprintf(streamOutputFile, "%s\t", tok1);
+
+			// split token 2 if necessary
+			if (tok2) {
+				gdl_string ** tabHitGi = gdl_string_split(tok2, del, &nbHit);
+				//fprintf(stdout,"nbHit %d \n",nbHit);
+				for (k = 0; k < nbHit; k++) {
+					// find the taxon for each gi hit in the gi2taxon hash table
+					if ((val = gdl_hashtable_lookup(gid2taxid_table,
+							tabHitGi[k])) != 0) {
+						// print the taxon
+						if (k < (nbHit - 1))
+							fprintf(streamOutputFile, "%s;", val);
+						else
+							fprintf(streamOutputFile, "%s", val);
+					} else {
+						result = 0;
+						if (k < (nbHit - 1))
+							fprintf(streamOutputFile, "unknown_gi;", val);
+						else
+							fprintf(streamOutputFile, "unknown_gi", val);
+					}
+				}
+			}
+
+			gdl_string_free(line);
+			line = 0;
+			fprintf(streamOutputFile, "\n");
+
+		}
+	}
+
+	else {
+		while (gdl_getline(&line, &n, stream) != -1) {
+			i = j = 0;
+
+			tok1 = gdl_string_next_token(line, n, &i, &j);
+
+
+			// split token 2 if necessary
+			if (tok1) {
+				gdl_string ** tabHitGi = gdl_string_split(tok1, del, &nbHit);
+				for (k = 0; k < nbHit; k++) {
+					// find the taxon for each gi hit in the gi2taxon hash table
+					if ((val = gdl_hashtable_lookup(gid2taxid_table,
+							tabHitGi[k])) != 0) {
+						// print the taxon
+						if (k < (nbHit - 1))
+							fprintf(streamOutputFile, "%s;", val);
+						else
+							fprintf(streamOutputFile, "%s", val);
+					} else {
+						result = 0;
+						if (k < (nbHit - 1))
+							fprintf(streamOutputFile, "unknown_gi;", val);
+						else
+							fprintf(streamOutputFile, "unknown_gi", val);
+					}
+				}
+			}
+
+			gdl_string_free(line);
+			line = 0;
+			fprintf(streamOutputFile, "\n");
+
+		}
+	}
+	gdl_fileclose(input_file, stream);
+	return result;
+}
+
+
+
+
+/**
+ * \fn int main(int argc, char *argv[])
+ * \brief Main functions. Prints the taxon ids corresponding to some gi.
+ * \param argc
+ * \param argv
+ * \return a success indicator
+ */
+int main(int argc, char *argv[]) {
+	int status;
+	parse_argument(argc, argv);
+	if (help_flag) {
+		exit(help());
+	}
+
+	status = check_argument();
+
+	if (status == GDL_SUCCESS) {
+
+
+		// opening the output file to save the results
+		FILE * streamOutputFile = gdl_fileopen (OUTPUT, "w");
+
+		//create a hash table with the keys equal to gi and the value equals to the taxon
+		gdl_hashtable * gid2taxid_table = read_input_mapfile (INPUT_MAP);
+
+		fprintf(stdout,"Input map file reading OK \n");
+		// print the taxon corresponding to each gi hit
+		if(read_input_query_and_get_taxon (INPUT_QUERY, gid2taxid_table,streamOutputFile,gionly_flag)==0) fprintf(stdout,"There is an least 1 unknown gi in the query input file \n");
+
+
+		// free the hash table
+		gdl_hashtable_free(gid2taxid_table);
+
+
+
+		// close the file streams
+		gdl_fileclose (OUTPUT, streamOutputFile);
+	}
+
+	exit(0);
+}

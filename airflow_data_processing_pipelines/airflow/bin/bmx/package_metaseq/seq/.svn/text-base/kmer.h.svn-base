@@ -1,0 +1,101 @@
+/*
+ *  kmer.h
+ *
+ *  $Author: veyriejb $, $Date: 2011/05/03 10:21:51 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#ifndef __KMER_H__
+#define __KMER_H__
+
+#include <stdint.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_string.h>
+#include <gdl/gdl_types.h>
+#include <gdl/gdl_bit_vector.h>
+#include <gdl/gdl_hash.h>
+#include <gdl/gdl_list.h>
+#include <gdl/gdl_io.h>
+
+__BEGIN_DECLS
+
+/*
+inline uint64_t reverse_bits(uint64_t v) {
+  v = ((v >> 1)  & 0x5555555555555555UL) | ((v & 0x5555555555555555UL) << 1);
+  v = ((v >> 2)  & 0x3333333333333333UL) | ((v & 0x3333333333333333UL) << 2);
+  v = ((v >> 4)  & 0x0F0F0F0F0F0F0F0FUL) | ((v & 0x0F0F0F0F0F0F0F0FUL) << 4);
+  v = ((v >> 8)  & 0x00FF00FF00FF00FFUL) | ((v & 0x00FF00FF00FF00FFUL) << 8);
+  v = ((v >> 16) & 0x0000FFFF0000FFFFUL) | ((v & 0x0000FFFF0000FFFFUL) << 16);
+  v = ( v >> 32                        ) | ( v                         << 32);
+  return v;
+}
+
+typedef struct
+{
+	size_t k;
+	gdl_bit_vector bits;
+} mgx_kmer;
+
+
+mgx_kmer * mgx_kmer_stralloc (const gdl_string * kmr_string);
+mgx_kmer * mgx_kmer_uint64alloc (const uint64_t kmr_uint64); // max k = 32
+mgx_kmer * mgx_kmer_revcomp (const mgx_kmer * kmr);
+uint64_t mgx_kmer2uint64 (const mgx_kmer * kmr); // max k = 32
+gdl_string * mgx_kmer2string (const mgx_kmer * kmr);
+
+*/
+
+
+
+/*==================================================================
+ *
+ * mgx_kmerprofile
+ *
+ *==================================================================*/
+typedef struct{
+	size_t nseq;		// number of sequences defining the profile
+	size_t nkmer;		// number of distinct kmers
+	size_t totCounts;	// number of kmers occurences
+	gdl_hashtable *counts; // feature id to count hash table
+}mgx_kmerprofile;
+
+mgx_kmerprofile * mgx_kmerprofile_alloc (const size_t nkmer, const size_t nseq);
+void mgx_kmerprofile_free (mgx_kmerprofile * p);
+int mgx_kmerprofile_fwrite (FILE * stream, const mgx_kmerprofile * p);
+mgx_kmerprofile * mgx_kmerprofile_fread(FILE * stream);
+
+/*==================================================================
+ *
+ * mgx_kmerdb
+ *
+ *==================================================================*/
+typedef struct{
+	size_t size;						// number of profiles in the db
+	size_t nseq;						// number of sequences involved in the db
+	size_t nkmer;						// number of distinct kmers (i.e.; features) involved in the db
+	size_t model;						// naive bayes model (0 = multinomial term frequency ; 1 = multinomial term presence ; 2 = multivariate bernouilli ?)
+	double smoothing;					// smoothing parameter for naive bayes
+	size_t *profile_ids;				// ids (--> taxids) of the profiles
+	double *profile_probs;				// prior probabilities assiciates to the profiles
+	mgx_kmerprofile ** profiles;		// kmer profiles
+}mgx_kmerdb;
+
+mgx_kmerdb * mgx_kmerdb_alloc (const size_t nprofiles);
+
+void mgx_kmerdb_free (mgx_kmerdb * db);
+int mgx_kmerdb_fwrite (FILE * stream, const mgx_kmerdb * db);
+mgx_kmerdb * mgx_kmerdb_fread (FILE * stream);
+void mgx_kmerdb_fit_nb(mgx_kmerdb * db, double smoothing, size_t model);
+void mgx_kmerdb_count_kmers(mgx_kmerdb *db);
+void mgx_kmerdb_count_sequences(mgx_kmerdb *db);
+double ** mgx_kmerdb_get_count_matrix(mgx_kmerdb * db, size_t format);
+
+__END_DECLS
+
+#endif

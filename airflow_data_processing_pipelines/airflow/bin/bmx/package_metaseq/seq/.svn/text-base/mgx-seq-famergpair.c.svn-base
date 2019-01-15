@@ -1,0 +1,334 @@
+/*
+ *  header.c
+ *
+ *  $Author: mahep $, $Date: 2012/10/02 17:25:37 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <time.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_io.h>
+#include <gdl/gdl_igdb_genome.h>
+
+#include "mixgenomix.h"
+
+#include "gzutil.h"
+#include <ext/kseq/kseq.h>
+KSEQ_INIT(gzFile, gzread);
+
+#include "header.c"
+
+static gdl_string * PROGRAM = "mgx-fastamergepaired";
+
+static int help_flag    = 0;
+static int verbose_flag = 0;
+static int debug_flag = 0;
+static int checkid_flag = 0;
+static int cat_flag = 0;
+
+static gdl_string * READ = NULL;
+static gdl_string * PAIRED = NULL;
+static gdl_string * OUTPUT = NULL;
+static gdl_string * SEP = NULL;
+static size_t N  = 0;
+
+static struct option long_options[] =
+{
+		/* These options set a flag. */
+		{"help", no_argument,          &help_flag, 1},
+		{"verbose", no_argument,       &verbose_flag, 1},
+		{"debug", no_argument,         &debug_flag, 1},
+		{"brief",   no_argument,       &verbose_flag, 0},
+		{"checkid",   no_argument,       &checkid_flag, 1},
+        {"cat",   no_argument,       &cat_flag, 1},
+		/* These options don't set a flag.
+         We distinguish them by their indices. */
+		{"read",   required_argument, 0, 'r'},
+		{"paired",   required_argument, 0, 'p'},
+		{"output",   required_argument, 0, 'o'},
+		{"sep",   required_argument, 0, 's'},
+		{0, 0, 0, 0}
+};
+
+static int
+parse_argument (int argc, char *argv[])
+{
+	int c;
+
+	while (1)
+	{
+
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+
+		c = getopt_long (argc, argv, "r:p:o:s:",
+				long_options, &option_index);
+
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+
+		switch (c)
+		{
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf ("option %s", long_options[option_index].name);
+			if (optarg)
+				printf (" with arg %s", optarg);
+			printf ("\n");
+			break;
+		case 'r':
+			READ = gdl_string_clone (optarg);
+			break;
+		case 'p':
+			PAIRED = gdl_string_clone (optarg);
+			break;
+		case 'o':
+			OUTPUT = gdl_string_clone (optarg);
+			break;
+		case 's':
+			SEP = gdl_string_clone (optarg);
+			break;
+		case '?':
+			GDL_ERROR_VAL ("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL ("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+static int
+check_argument (void)
+{
+	if (READ == 0)
+	{
+		GDL_ERROR_VAL ("No read file provided",
+				GDL_FAILURE,
+				1);
+	}
+	if (PAIRED == 0)
+	{
+		GDL_ERROR_VAL ("No paired-read file provided",
+				GDL_FAILURE,
+				1);
+	}
+	if (OUTPUT == 0)
+	{
+		GDL_ERROR_VAL ("No output directory provided",
+				GDL_FAILURE,
+				1);
+	}
+
+	if (SEP == 0 & cat_flag ==0)
+	{
+		SEP = "NNNNN";
+		printf("No separator specified, using %s\n", SEP);
+	}
+
+	return GDL_SUCCESS;
+}
+
+static int
+help (void)
+{
+	print_header (PROGRAM);
+	printf ("\n");
+	printf ("--help\tDisplay a brief help on program usage\n");
+	printf ("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf ("--debug\tMore detailed output message (e.g, for debugging purposes)\n");
+	printf ("\n");
+	printf ("--read or -r\t input read file (fasta or fastq format)\n");
+	printf ("--paired or -p\t input paired-read file (fasta or fastq format)\n");
+	printf ("[--sep or -s\t separator to use (default = NNNNN - 5 N's)]\n");
+	printf ("--output or -o\t output file (fasta format) \n");
+	printf ("--checkid flag specifying to check read ids\n");
+	printf ("--cat flag specifying to concatenate sequences (not merged into a single sequence)\n");
+
+}
+
+
+void
+print_seq (const char * seq, FILE * stream)
+{
+   size_t i, n = strlen(seq);
+
+   for(i = 0; i < n; i++)
+   {
+      if (i && i % 80 == 0)
+      {
+         fprintf (stream, "\n");
+      }
+      fputc (seq[i], stream);
+   }
+}
+
+
+int
+main (int argc, char *argv[])
+{
+
+	int status;
+
+	parse_argument (argc, argv);
+
+	if (help_flag)
+	{
+		exit (help());
+	}
+
+	if(debug_flag)
+	{
+		verbose_flag = 1;
+	}
+
+	status = check_argument ();
+
+
+	if (status == GDL_SUCCESS)
+	{
+
+		gzFile f1, f2;
+		kseq_t *seq1, *seq2;
+		FILE * outstream;
+		size_t cptr;
+		gdl_string *buf, *buf1, *buf2;
+
+		// open input files
+		f1 = gzopen(READ, "r");
+		seq1 = kseq_init(f1);
+		f2 = gzopen(PAIRED, "r");
+		seq2 = kseq_init(f2);
+
+		// open output file
+  		outstream = gdl_fileopen (OUTPUT, "w");
+
+
+		// process reads
+		cptr = 0;
+		while (kseq_read(seq1) >= 0)
+		{
+			cptr++;
+			// display log info
+			if(verbose_flag & cptr % 10000 == 0){
+				printf("--> processing pair no %d\n", cptr);
+			}
+			// read paired read
+			kseq_read(seq2);
+			// check ids match
+			if(checkid_flag){
+				buf1 = gdl_string_alloc (seq1->name.l-2);
+				buf2 = gdl_string_alloc (seq2->name.l-2);
+				strncpy(buf1, seq1->name.s, seq1->name.l-2);
+				strncpy(buf2, seq2->name.s, seq2->name.l-2);
+
+				if(strcmp(buf1, buf2) > 0){
+					printf("read ids of pair %d do not match !\n", cptr);
+					GDL_ERROR_VAL ("No read file provided", GDL_FAILURE,1);
+				}
+				gdl_string_free(buf1);
+				gdl_string_free(buf2);
+
+			}
+			//  concatenate or merge ?
+			if(cat_flag){
+				// test fastq
+				 if (seq1->qual.s) // we assume that seq1 and seq2 are both fasta or fastq
+                {
+					// SEQUENCE 1
+				   // writing seq1 identifier with comment if it exists
+					if (seq1->comment.s)
+					{
+						fprintf (outstream,"@%s %s\n", seq1->name.s, seq1->comment.s);
+					}
+					else
+					{
+						fprintf (outstream, "@%s\n", seq1->name.s);
+					}
+					// printing sequence
+					fprintf (outstream,"%s\n", seq1->seq.s);
+                    fprintf (outstream,"+\n");
+					// printing quality
+                    fprintf (outstream,"%s\n", seq1->qual.s);
+					
+					// SEQUENCE 2
+					// writing seq2 identifier with comment if it exists
+					if (seq2->comment.s)
+					{
+						fprintf (outstream,"@%s %s\n", seq2->name.s, seq2->comment.s);
+					}
+					else
+					{
+						fprintf (outstream,"@%s\n", seq2->name.s);
+					}
+					// printing sequence
+					fprintf (outstream,"%s\n", seq2->seq.s);
+                    fprintf (outstream,"+\n");
+					// printing quality
+                    fprintf (outstream,"%s\n", seq2->qual.s);
+	              
+               } 
+			   // both sequences are fasta
+               else 
+               {
+					// SEQUENCE 1
+					// writing seq1 identifier with comment if it exists
+					if (seq1->comment.s)
+					{
+						fprintf (outstream,">%s %s\n", seq1->name.s, seq1->comment.s);
+					}
+					else
+					{
+						fprintf (outstream,">%s\n", seq1->name.s);
+					}
+                     fprintf (outstream,"%s\n", seq1->seq.s);
+					 
+					 // SEQUENCE 2
+					// writing seq2 identifier with comment if it exists
+					if (seq2->comment.s)
+					{
+						fprintf (outstream,">%s %s\n", seq2->name.s, seq2->comment.s);
+					}
+					else
+					{
+						fprintf (outstream,">%s\n", seq2->name.s);
+					}
+					 fprintf (outstream,">%s\n", seq2->name.s);
+                     fprintf (outstream,"%s\n", seq2->seq.s);
+					 
+               }
+			}else{
+				// merge sequences
+				buf = gdl_string_alloc(seq1->seq.l + seq2->seq.l + strlen(SEP));
+				strcpy(buf, seq1->seq.s);
+				strcat(buf, SEP);
+				strcat(buf, seq2->seq.s);
+				// print read id
+            			fprintf (outstream, ">%s\n", seq1->name.s);
+            			// print sequence
+            			print_seq (buf, outstream);
+            			fprintf(outstream, "\n");
+            			// free buffer
+            			gdl_string_free(buf);
+			}
+		}
+
+	}
+
+	exit (0);
+}

@@ -1,0 +1,321 @@
+/*
+ *  mgx-bam_statistics.c
+ *
+ *  $Author: Pierre-Yves Audfray $, $Date: Octobre 2014 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+ 
+#include <getopt.h>
+#include <stddef.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_list.h>
+#include <gdl/gdl_hash.h>
+
+#include <ext/bam/sam.h>
+#include <utils/gzutil.h>
+
+#include "mixgenomix.h"
+#include "header.c"
+#include "util.c"
+ 
+ static gdl_string * BAMFILE = NULL; // name of the input SAM file
+ static gdl_string * STATFILE = NULL; // name of the tab-file containing statistics
+ int GFF=0;
+ int Count_READS=0;
+ static int help_flag = 0;
+ static gdl_string * PROGRAM = "mgx-seq-bams2Stats";
+
+ /**
+ * \fn static int check_argument(void)
+ * \brief This function checks the main function arguments.
+ * \return a success indicator
+ */
+static int check_argument(void) {
+	if (BAMFILE == 0) {
+		GDL_ERROR_VAL("No input file provided", GDL_FAILURE, 1);
+	}
+	if (STATFILE == 0) {
+		GDL_ERROR_VAL("No output file provided", GDL_FAILURE, 1);
+	}
+	return GDL_SUCCESS;
+}
+
+ double covered_bases =0;
+ double depth_sum=0;
+ double depth_square_sum=0;
+ double depth_med=0;
+ double depth_std_dev=0;
+ double p_cov_ref=0;
+ int ref_length=0;	
+
+typedef struct {  
+    int beg, end;  
+    samfile_t *in;  
+} tmpstruct_t;  
+
+static struct option long_options[] = {
+/* These options set a flag. */
+{ "help", no_argument, &help_flag, 1 }, 
+{ "bam_file", required_argument, 'b' },
+{ "Statfile", required_argument, 0, 'o' },
+{ "gff", no_argument, 0, 1 },
+{ "countReads", no_argument, 0, 1 }
+ };
+
+/**
+ * \fn static int parse_argument(int argc, char *argv[])
+ * \brief This function parses the function arguments.
+ *
+ * \param argc
+ * \param argv
+ * \return a success indicator
+ */
+static int parse_argument(int argc, char *argv[]) {
+	int c;
+	while (1) {
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+		c = getopt_long(argc, argv, "b:o:grh", long_options, &option_index);
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+		switch (c) {
+		case 'b':
+			BAMFILE = gdl_string_clone(optarg);
+			break;
+		case 'o':
+			STATFILE = gdl_string_clone(optarg);
+			break;
+		case 'r':
+			Count_READS =1;
+			break;
+		case 'g':
+			// GFF = (int) atoi (optarg);
+			GFF = 1;
+			break;
+		case 'h':
+			// GFF = (int) atoi (optarg);
+			help_flag = 1;
+			break;
+		case '?':
+			GDL_ERROR_VAL("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+/**
+ * \fn static int help(void)
+ * \brief This function prints the help
+ */
+static int help(void) {
+	print_header(PROGRAM);
+	printf(",====================,\n");
+	printf("|        HELP        |\n");
+	printf("'===================='\n");
+	printf("This program produces a Tab-separated file containing statistics from a bam file. It has been developed within and for the resequencing Pipeline\n");
+	printf("Some of the Fields are filled with Label Value in order to be replaced by a parent script (e.g. mgx-bamStats.sh in the resequencing pipeline execution\n");
+	printf("\n");
+	printf("--help\tDisplay a brief help on program usage\n");
+	printf("\n");
+	printf("-v\t verbose\n");
+	printf("\n");
+	printf("-b \t BAM file, (lexicographically sorted) \n");
+	printf("\n");
+	printf("-o\t output file : tab_separated_file\n");
+	printf("\n");
+	printf("-r\t enable Counting reads. This option is made to distinguish cases (preprocessing or not). \n");
+	printf("If NOT set, fields \"Reads PreProcessing\",\"Reads PostPreProcessing\" and \"percent_Reads_Kept\" will be filled by the label \n");
+	printf("If set, fields will be filled as followings \"Reads PreProcessing\" ==> Counted Reads ,\"Reads PostPreProcessing\" ==> \"-\" and \"percent_Reads_Kept\"=>100\n");
+	printf("\n");
+	printf("-g\t if set display on the standard output the depth at each position for every reference.");
+	printf("This output is useful to feature_content.pl (associated to the gff file) to produce features_content.csv\n");
+	printf("=====================\n");
+	printf("\n");	
+}
+  
+// callback for bam_fetch()  
+static int fetch_func(const bam1_t *b, void *data)  
+{  
+    bam_plbuf_t *buf = (bam_plbuf_t*)data;  
+    bam_plbuf_push(b, buf);  
+    return 0;  
+}  
+// callback for bam_plbuf_init()  
+static int pileup_func(uint32_t tid, uint32_t pos, int n, const bam_pileup1_t *pl, void *data)  
+{  
+    tmpstruct_t *tmp = (tmpstruct_t*)data;  
+    if ((int)pos >= tmp->beg && (int)pos < tmp->end) {
+		if ( GFF == 1) {
+			FILE * streamCovFile;
+			// display depth at each position for each reference
+			printf("%s\t%d\t%d\n",tmp->in->header->target_name[tid], pos, n);
+		}  
+		covered_bases++;
+		depth_sum+=n;
+		depth_square_sum+=n*n;
+		}
+    return 0;  
+}  
+
+int coverage_func (const char * BAMFILE, const char * Ref_name, int ref_length, FILE * streamOutputFile, int GFF){
+	tmpstruct_t tmp;  
+    tmp.beg = 0; tmp.end = 0x7fffffff;  
+    tmp.in = samopen(BAMFILE, "rb", 0);
+    if (tmp.in == 0) {  
+        fprintf(stderr, "In coverage_func Fail to open BAM file %s\n", BAMFILE);  
+        return 1;  
+    }  	 
+	int ref;
+	bam_index_t *idx;  
+	bam_plbuf_t *buf;  
+	idx = bam_index_load(BAMFILE); // load BAM index  
+	if (idx == 0) {  
+		fprintf(stderr, "BAM indexing file is not available.\n");  
+		return 1;  
+	}
+	bam_parse_region(tmp.in->header, Ref_name, &ref, &tmp.beg, &tmp.end); // parse the region  
+	if (ref < 0) {  
+		fprintf(stderr, "Invalid region %s\n", Ref_name);  
+		return 1;  
+	}
+	buf = bam_plbuf_init(pileup_func, &tmp); // initialize pileup  
+	bam_fetch(tmp.in->x.bam, idx, ref, tmp.beg, tmp.end, buf, fetch_func);  
+	bam_plbuf_push(0, buf); // finalize pileup  
+	bam_index_destroy(idx);  
+	bam_plbuf_destroy(buf); 	
+		
+	p_cov_ref=(covered_bases*100)/ref_length;
+	depth_med=depth_sum/ref_length;
+	printf("===============\n%d\t%.2f\t%.2f\tna",ref_length, depth_med, depth_std_dev );
+	depth_std_dev=sqrt(((depth_square_sum)/(ref_length) - (depth_med*depth_med)));
+	printf("%.2f\t%.2f\t%.2f\tna\n===============\n",p_cov_ref, depth_med, depth_std_dev );
+	fprintf(streamOutputFile,"%.2f\t%.2f\t%.2f\tna",p_cov_ref, depth_med, depth_std_dev );
+	covered_bases=0;
+	depth_sum=0;
+	
+	samclose(tmp.in);
+	fprintf(streamOutputFile,"\n");	
+    return 0;  
+}
+///////////////////////////////////////
+/////////////// MAIN //////////////////
+///////////////////////////////////////
+
+ int main (int argc, char *argv[]){
+	int status;
+	parse_argument(argc, argv);
+	if (help_flag) {
+		exit(help());
+	}
+	status = check_argument();
+
+	if (status == GDL_SUCCESS) {
+		bamFile bamStream = bam_open(BAMFILE, "r");
+		bam_header_t * bamHeader = bam_header_read(bamStream);
+		
+		bam1_t * bamAlign;
+
+		size_t ac = 0;
+		uint32_t n_read = 0; // Number of Reads
+		uint32_t n_mapped_reads = 0;// Number of Mapped Reads
+		uint32_t n_unmapped_reads = 0;// Number of UNmapped Reads
+		double p_mapped_reads = 0; // Percentage of Mapped Reads
+		uint32_t n_mapped_reads_ref = 0;// Number of Mapped Reads
+		double p_mapped_reads_ref = 0; // Percentage of Mapped Reads
+		int cpt = 0;
+			
+		int32_t REF_NB=bamHeader->n_targets;
+		gdl_string **STATS_str = GDL_MALLOC (gdl_string *, (REF_NB+1)*3);
+		gdl_string *OLD_REF = "null";
+		int32_t i=0;
+		int32_t k=0;
+		for ( i =0; i<REF_NB; i++){ 
+			STATS_str [k] = bamHeader->target_name[i];
+			STATS_str [k+1] = bamHeader->target_len[i];
+			k+=3;
+		}
+		// INITIALISATION
+		OLD_REF=STATS_str [0];
+		
+		//Initialize the pointer to the first alignment
+		bamAlign = bam_init1();
+		int32_t ref_i=2;
+		int32_t beg_pos=0;
+		int32_t end_pos=0;
+		while (bam_read1(bamStream, bamAlign) >= 0) {
+			n_read++;
+			if ((bamAlign->core.flag&BAM_FUNMAP)==0){
+				n_mapped_reads++;
+			}else{
+				n_unmapped_reads++;
+			}
+			// Assuming that the bam file is lexicography sorted
+			if (((bamAlign->core).tid)!=-1){
+				if ( bamHeader->target_name[(bamAlign->core).tid] == OLD_REF ){
+					// Same reference we increment counters
+					n_mapped_reads_ref++;
+				}else{
+					// Storing informations
+					STATS_str[ref_i] = n_mapped_reads_ref;
+					// Changing reference
+					OLD_REF=bamHeader->target_name[(bamAlign->core).tid];
+					n_mapped_reads_ref=0;
+					// Incrementing counters
+					ref_i+=3;
+					n_mapped_reads_ref++;
+				}
+			}
+		}
+		STATS_str[ref_i] = n_mapped_reads_ref;
+		p_mapped_reads=(((float)n_mapped_reads*100)/n_read);
+		p_mapped_reads_ref=(((float)n_mapped_reads_ref*100)/n_read);
+
+		int32_t j=0;
+		k=0;
+		// RUN STATS
+		FILE * streamOutputFile;
+		streamOutputFile = gdl_fileopen(STATFILE, "w");
+		fprintf(streamOutputFile,"REF\tLENGTH\tGC(%)\tTotalReadsPreprocessing\tTotalReadsPostPreprocessing\tRemainingReadsPostPreproc(%)\tMapped_Reads\tUnmappedReads\tMappedReads(%)\tMapper\tCoverage(%)\tDEPTH(Average)\tDEPTH(Standard_Deviation)\tInsert_Size(Median)\n");
+		
+		if (Count_READS == 1) {
+			fprintf (streamOutputFile,"RUN\tna\tna\t%d\tPOST\tREM\t%d\t%d\t%.2f\tMAPPER\tna\tna\tna\tINSERT_SIZE\n", n_read, n_mapped_reads, n_unmapped_reads, p_mapped_reads);
+		}else{
+			fprintf (streamOutputFile,"RUN\tna\tna\tPRE\tPOST\tREM\t%d\t%d\t%.2f\tMAPPER\tCOV\tD_AVG\tD_STD\tINSERT_SIZE\n", n_mapped_reads, n_unmapped_reads, p_mapped_reads);
+			}
+		for ( i =0; i<(REF_NB)*3; i+=1){
+			if ( i%3 == 0 ){
+			// STATS PER REF
+				uint32_t tmp_mapped=(uint32_t)STATS_str[i+2];
+				p_mapped_reads_ref=(((double)tmp_mapped*100)/n_read);
+				fprintf (streamOutputFile,"%s\t%ld\tGC_%d\tna\tna\tna\t%d\tna\t%.2f\t-\t", STATS_str[i], STATS_str[i+1],k,STATS_str[i+2], p_mapped_reads_ref);
+				coverage_func((const char *) BAMFILE, (const char *) STATS_str[i], (int) STATS_str[i+1], streamOutputFile, 1);
+				k++;	
+			 }
+		}
+		GDL_FREE(STATS_str);	
+		gdl_fileclose(STATFILE, streamOutputFile);		
+		bam_destroy1(bamAlign);
+		bam_close(bamStream);
+		bam_header_destroy(bamHeader); 
+	}else{
+		printf("Please specify an Input file");
+	}	
+ }
+ 

@@ -1,0 +1,200 @@
+/*
+ *  mgx-fastqtrim.c
+ *
+ *  $Author: lepriolc $, $Date: 2012/02/07 17:19:34 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+ /**
+ * \file mgx-fastqtrim.c
+ * \brief This program trims reads from a fastq file
+ * \author Jean-Baptiste Veyrieras
+ * \version 1.0
+ * \date November 1 2011
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_list.h>
+#include <gdl/gdl_hash.h>
+
+#include <utils/gzutil.h>
+#include "mixgenomix.h"
+#include <ext/kseq/kseq.h>
+KSEQ_INIT(gzFile, gzread);
+
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-fastqtrim";
+
+static int help_flag = 0;
+static int verbose_flag = 0;
+
+static gdl_string * INPUT = NULL;  // name of the input Fastq file
+static size_t MAX_LENGTH  = 0;  // minimum length
+static size_t MIN_LENGTH  = 0;  // maximum length
+static size_t TRIM_LEFT  = 0;  // trim bases in 5'
+
+static struct option long_options[] = {
+/* These options set a flag. */
+{ "help", no_argument, &help_flag, 1 },
+{ "verbose", no_argument, &verbose_flag, 1 },
+{ "brief", no_argument, &verbose_flag, 2 },
+/* These options don't set a flag.
+ We distinguish them by their indices. */
+{ "input", required_argument, 0, 'i' },
+{ "max-length", required_argument, 0, 'x' },
+{ "min-length", required_argument, 0, 'n' },
+{ "trim-left", required_argument, 0, 'l' },
+{ 0, 0, 0, 0, 0 } };
+
+static int parse_argument(int argc, char *argv[]) {
+	int c;
+	while (1) {
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+		c = getopt_long(argc, argv, "i:x:n:l:", long_options, &option_index);
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+		switch (c) {
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf("option %s", long_options[option_index].name);
+			if (optarg)
+				printf(" with arg %s", optarg);
+			printf("\n");
+			break;
+		case 'i':
+			INPUT = gdl_string_clone(optarg);
+			break;
+		case 'x':
+			MAX_LENGTH = atol(optarg);
+			break;
+		case 'n':
+			MIN_LENGTH = atol(optarg);
+			break;
+		case 'l':
+			TRIM_LEFT = atol(optarg);
+			break;
+		case '?':
+			GDL_ERROR_VAL("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+/**
+ * \fn static int check_argument(void)
+ * \brief This function checks the main function arguments.
+ * \return a success indicator
+ */
+static int check_argument(void) {
+	if (INPUT == 0) {
+		GDL_ERROR_VAL("No input fastq file provided", GDL_FAILURE, 1);
+	}
+	return GDL_SUCCESS;
+}
+
+/**
+ * \fn static int help(void)
+ * \brief This function prints the help
+ */
+static int help(void) {
+	print_header(PROGRAM);
+	printf("\n");
+	printf("--help\tDisplay a brief help on program usage\n");
+	printf("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf("\n");
+	printf("--input or -i\tAn input fastq file\n");
+	printf("--max-length or -x\tTrim right part of reads which length is higher than the provided value\n");
+	printf("--min-length or -n\tRemove reads which length is lower than the provided value\n");
+	printf("--trim-left or -n\tTrim left part of reads\n");
+}
+
+int main(int argc, char *argv[])
+{
+	int status;
+	parse_argument(argc, argv);
+	if (help_flag) {
+		exit(help());
+	}
+
+	status = check_argument();
+
+	if (status == GDL_SUCCESS)
+        {
+	   gzFile fp;
+	   kseq_t *seq;
+           gdl_hashtable * read2out = 0;
+
+	   fp = gzopen(INPUT, "r");
+	   seq = kseq_init(fp);
+
+	   while (kseq_read(seq) >= 0)
+	   {
+               char * read_seq  = gdl_string_clone (seq->seq.s);
+               char * read_qual = (seq->qual.l) ? gdl_string_clone (seq->qual.s) : 0;
+               if (MAX_LENGTH && strlen(read_seq) > MAX_LENGTH + TRIM_LEFT)
+               {
+                   read_seq[MAX_LENGTH+TRIM_LEFT]='\0';
+                   read_qual[MAX_LENGTH+TRIM_LEFT]='\0';
+               }
+               if (MIN_LENGTH && strlen(read_seq) < MIN_LENGTH)
+               {
+                  GDL_FREE (read_seq);
+                  GDL_FREE (read_qual);
+                  continue;
+               }
+               if (strlen(read_seq) <= TRIM_LEFT)
+               {
+            	   GDL_FREE (read_seq);
+            	   GDL_FREE (read_qual);
+            	   continue;
+               }
+
+
+               printf ("@%s %s\n", seq->name.s, seq->comment.s);
+/*               printf ("@%s\n", seq->name.s);*/
+               if (TRIM_LEFT) {
+            	   printf("%.*s\n", strlen(read_seq)-TRIM_LEFT, read_seq + TRIM_LEFT);
+               } else {
+            	   printf ("%s\n", read_seq);
+               }
+
+               if (read_qual)
+               {
+                      printf ("+\n");
+                      if (TRIM_LEFT) {
+                    	  printf("%.*s\n", strlen(read_qual)-TRIM_LEFT, read_qual + TRIM_LEFT);
+                      } else {
+                    	  printf ("%s\n", read_qual);
+                      }
+               }
+               GDL_FREE (read_seq);
+               GDL_FREE (read_qual);
+           }
+	   kseq_destroy(seq);
+	   gzclose(fp);
+      }
+      exit(0);
+}

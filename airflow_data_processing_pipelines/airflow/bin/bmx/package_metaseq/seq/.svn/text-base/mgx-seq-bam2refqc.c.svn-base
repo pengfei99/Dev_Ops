@@ -1,0 +1,590 @@
+/*
+ *  mgx-refqc.c
+ *
+ *  $Author: veyriejb $, $Date: 2012/04/12 11:32:29 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011 DKL Team, bioMérieux, France.
+ *
+ */
+
+ /**
+ * \file mgx-refqc.c
+ * \brief This program reads a bam file and report the read mismatches and insertion/deletion with respect to the read position
+ * \author Jean-Baptiste Veyrieras
+ * \version 1.0
+ * \date November 1 2011
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_list.h>
+#include <gdl/gdl_hash.h>
+
+// mixgenomix header
+#include <ext/bam/sam.h>
+#include <utils/gzutil.h>
+
+#include "mixgenomix.h"
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-refqc";
+
+static int help_flag = 0;
+static int verbose_flag = 0;
+static int byqual_flag = 0;
+static int error_by_read_flag = 0;
+
+static gdl_string * INPUT = NULL; // name of the input SAM file
+static gdl_string * OUTPUT = NULL; // name of the file to save the hits (for bwa-sw only single hits with non-null mapping quality scores)
+static uint32_t MIN_QUALITY = 0; // minimum alignment quality (MAPQ field)
+
+static struct option long_options[] = {
+
+	/* These options set a flag. */
+	{ "help", no_argument, &help_flag, 1 },
+	{ "verbose", no_argument, &verbose_flag, 1 },
+	{ "brief", no_argument, &verbose_flag, 2 },
+	{ "byqual", no_argument, &byqual_flag, 1 },
+	{ "error-by-read", no_argument, &error_by_read_flag, 1 },
+
+	/* These options don't set a flag.
+	We distinguish them by their indices. */
+	{ "output", required_argument, 0, 'o' },
+	{ "input", required_argument, 0, 'i' },
+	{ 0, 0, 0, 0 }
+};
+
+static int parse_argument(int argc, char *argv[]) {
+	int c;
+	while (1) {
+
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+		c = getopt_long(argc, argv, "i:o:m:", long_options, &option_index);
+
+		/* Detect the end of the options. */
+		if (c == -1) break;
+		switch (c) {
+			case 0:
+
+				/* If this option set a flag, do nothing else now. */
+				if (long_options[option_index].flag != 0)
+					break;
+				printf("option %s", long_options[option_index].name);
+				if (optarg)
+					printf(" with arg %s", optarg);
+				printf("\n");
+				break;
+			case 'i':
+				INPUT = gdl_string_clone(optarg);
+				break;
+			case 'o':
+				OUTPUT = gdl_string_clone(optarg);
+				break;
+			case 'm':
+				MIN_QUALITY = (uint32_t)atol(optarg);
+				break;
+			case '?':
+				GDL_ERROR_VAL("Unknown arguments", GDL_EINVAL, -1);
+			default:
+				GDL_ERROR_VAL("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+/**
+ * \fn static int check_argument(void)
+ * \brief This function checks the main function arguments.
+ * \return a success indicator
+ */
+static int check_argument(void) {
+	if (INPUT == 0) {
+		GDL_ERROR_VAL("No input file provided", GDL_FAILURE, 1);
+	}
+	if (OUTPUT == 0) {
+		GDL_ERROR_VAL("No output file provided", GDL_FAILURE, 1);
+	}
+	return GDL_SUCCESS;
+}
+
+/**
+ * \fn static int help(void)
+ * \brief This function prints the help
+ */
+static int help(void) {
+	print_header(PROGRAM);
+	printf("\n");
+	printf("--help\tDisplay a brief help on program usage\n");
+	printf("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf("\n");
+	printf("--byqual\tOutput read quality grouped by predicted phred quality score\n");
+	printf("--error-by-read\tOutput error type and position in each read on the standard output\n");
+	printf("\n");
+	printf("--input or -i\tA sam or a bam file\n");
+	printf("--output or -o\tThe output file\n");
+}
+
+int main(int argc, char *argv[]) {
+
+	int status;
+	parse_argument(argc, argv);
+	if (help_flag) {
+		exit(help());
+	}
+
+	status = check_argument();
+
+	if (status == GDL_SUCCESS) {
+
+		int32_t i, j, k, l, tag_pos, tag_len, aidx_pos;
+		bam1_t * bamAlign;
+
+		/*============================================================================================
+
+		Initialize the array to store the descriptive statist
+
+		==============================================================================================*/
+		#define MAX_READ_QUAL 99
+		#define MAX_READ_SIZE 10000
+		#define MAX_INDEL_SIZE 100
+
+		// read_stats[i][0] = number of reads with size >= i
+		// read_stats[i][1] = number of reads clipped at that position
+		// read_stats[i][2] = number of reads having a mismatch at that position
+		// read_stats[i][3] = number of reads having an insertion at that position
+		// read_stats[i][4] = number of reads having a deletion at that position
+		// indel_stats[0][0] = total number of insertions
+		// indel_stats[0][i] = number of insertions of size i
+		// indel_stats[1][0] = total number of deletions
+		// indel_stats[1][i] = number of deletions of size i
+
+		size_t *** read_stats;
+		size_t ** indel_stats;
+		size_t max_indel_size = 0;
+
+		indel_stats = GDL_MATRIX_ALLOC(size_t, 2, MAX_INDEL_SIZE);
+		read_stats = GDL_MALLOC(size_t **, MAX_READ_SIZE);
+
+		// Memory allocation
+		if (byqual_flag) {
+			for(i = 0; i < MAX_READ_SIZE; i++){
+				read_stats[i] = GDL_CALLOC(size_t *, MAX_READ_QUAL);
+				for(j = 0; j < MAX_READ_QUAL; j++){
+					read_stats[i][j] = GDL_CALLOC(size_t, 5);
+				}
+			}
+		}
+		else {
+			for(i = 0; i < MAX_READ_SIZE; i++) {
+				read_stats[i] = GDL_CALLOC(size_t *, 1);;
+				read_stats[i][0] = GDL_CALLOC(size_t, 5);
+			}
+		}
+
+		// Open the file and initialize the file handler
+		bamFile stream = bam_open(INPUT, "r");
+		if (verbose_flag){
+			fprintf(stdout, "[bam_open] %p\n", stream);
+			fflush(stdout);
+		}
+		bam_header_t * bamHeader = bam_header_read(stream);
+		if (verbose_flag){
+			fprintf(stdout, "[bam_header] %p\n", bamHeader);
+			fflush(stdout);
+		}
+
+		// Alignment counter
+		size_t alignment_counter = 0;
+		uint32_t nread = 0;
+		uint32_t nclipped = 0;
+
+		// Initialize the pointer to the first alignment
+		bamAlign = bam_init1();
+
+		// Process each alignment
+		while (bam_read1(stream, bamAlign) >= 0) {
+
+			// counter
+			if ((alignment_counter && alignment_counter % 100000 == 0) && verbose_flag){
+				fprintf(stdout, "[bam_read] %ld alignements processed\n", alignment_counter);
+				fflush(stdout);
+			}
+
+			// Alignment counter + 1
+			alignment_counter++;
+
+			// Get mapping status : if mapped --> true, if unmapped --> false
+			int32_t is_mapped = ((bamAlign->core.flag&BAM_FUNMAP)==0);
+
+			// Get mapping quality
+			uint32_t qual = (bamAlign->core.qual);
+
+			// If read is unmapped or its mapping quality is to low --> go to next alignment
+			if (!is_mapped || qual < MIN_QUALITY){
+				continue;
+				bam_destroy1(bamAlign);
+				bamAlign = bam_init1();
+			}
+
+			// Get sequence length of SEQ field in BAM
+			int32_t seq_len = (bamAlign->core).l_qseq;
+
+			// Get sequence strand of SEQ field in BAM [if 0 : read is NOT reverse complemented, if 1 : read is reverse complemented]
+			int32_t seq_strand = bam1_strand(bamAlign);
+
+			// Get sequence quality (QUAL fied in BAM) corresponding to sequence in SEQ field
+			char * seq_qual = bam1_qual(bamAlign);
+
+			// MD tag
+			uint8_t * md_tag_aux = bam_aux_get(bamAlign, "MD");
+
+			// Stop if an alignment does NOT have a MD tag
+			if (!md_tag_aux){
+				GDL_ERROR_VAL("[error] No MD TAG found ! Please run 'samtools calmd' before\n", GDL_FAILURE, GDL_FAILURE);
+			}
+
+			char * md_tag = bam_aux2Z(md_tag_aux);
+
+			// Get cigar
+			uint32_t * cigar = bam1_cigar(bamAlign);
+
+			uint32_t read_length = 0;
+
+			// Process each cigar operation to calcul read length
+			for(k = 0; k < bamAlign->core.n_cigar; ++k){
+
+				// Get cigar operation number k
+				int cigar_operation = cigar[k] & BAM_CIGAR_MASK; // operation
+
+				// Get cigar operation number k length
+				int cigar_operation_length = cigar[k] >> BAM_CIGAR_SHIFT; // length
+
+				// match ---> 0
+				// insertion to the reference ---> 1
+				// deletion from the reference ---> 2
+				// skip on the reference (e.g. spliced alignment) ---> 3
+				// clip on the read with clipped sequence present in qseq ---> 4
+				// clip on the read with clipped sequence trimmed off ---> 5
+				// padding ---> 6
+
+				// If we have a match/mismatch, an insertion, a soft clipping or an hard clipping
+				if(cigar_operation == 0 || cigar_operation == 1 || cigar_operation == 4 || cigar_operation == 5){
+					read_length = read_length + cigar_operation_length;
+				}
+			}
+
+			// Add count to each read position
+			if (byqual_flag){
+				for(i = 0; i < read_length; i++) {
+					read_stats[i][seq_qual[i]][0]++;
+				}
+			} else {
+				for(i = 0; i < read_length; i++) {
+					read_stats[i][0][0]++;
+				}
+			}
+
+			// is it clipped ?
+			unsigned char clipped = 0;
+
+			// Create a mapping array between ref and and sequence (SEQ field) positions
+			int32_t * aidx = GDL_CALLOC(int32_t, seq_len);
+
+			// parse cigar
+			// if seq_strand==0 aka if read is NOT reverse complemented --> i=0,
+			// if seq_strand!=0 aka if read is reverse complemented --> i=seq_len-1
+			i = (seq_strand==0) ? 0 : read_length-1;
+
+			// Process each cigar operation
+			for(k = l = 0; k < bamAlign->core.n_cigar; ++k){
+
+				// Get cigar operation number k
+				int cigar_operation = cigar[k] & BAM_CIGAR_MASK; // operation
+
+				// Get cigar operation number k length
+				int cigar_operation_length = cigar[k] >> BAM_CIGAR_SHIFT; // length
+
+				switch(cigar_operation){
+
+					case BAM_CMATCH:
+
+					case BAM_CREF_SKIP:
+
+					case BAM_CPAD:
+
+					default:
+
+						// M mismatch
+						// N ambiguous reference
+						// P = padding
+						// other stuff
+
+						// If read is NOT reverse complemented
+						if (!seq_strand) {
+							for(j = 0; j < cigar_operation_length; j++, i++, l++){
+								aidx[l] = i+1;
+							}
+						}
+						// If read is reversed complemented
+						else {
+							for(j = 0; j < cigar_operation_length; j++, i--, l++){
+								aidx[l] = i+1;
+							}
+						}
+						break;
+
+					case BAM_CINS:
+
+						// I insertion (w.r.t the reference)
+
+						// If read is NOT reverse complemented
+						if (!seq_strand){
+							for(j = 0; j < cigar_operation_length; j++, i++, l++){
+								if (byqual_flag) {
+									if (!j) {
+										read_stats[i][seq_qual[i]][3]++;
+									}
+								} else {
+									if (!j) {
+										read_stats[i][0][3]++;
+									}
+								}
+								aidx[l] = i + 1;
+							}
+						}
+						// If read is reverse complemented
+						else {
+							for(j = 0; j < cigar_operation_length; j++, i--, l++){
+								if (byqual_flag) {
+									if (!j) {
+										read_stats[i][seq_qual[i]][3]++;
+									}
+								} else {
+									if (!j) {
+										read_stats[i][0][3]++;
+									}
+								}
+								aidx[l] = i + 1;
+							}
+						}
+						indel_stats[0][0]++;
+						indel_stats[0][cigar_operation_length]++;
+
+						if (cigar_operation_length > max_indel_size) max_indel_size = cigar_operation_length;
+
+						break;
+
+					case BAM_CDEL:
+
+						// D deletion (w.r.t the reference)
+
+						// Deletion count
+						if (byqual_flag) {
+							read_stats[i][seq_qual[i]][4]++;
+						} else {
+							read_stats[i][0][4]++;
+						}
+
+						indel_stats[1][0]++;
+						indel_stats[1][cigar_operation_length]++;
+
+						if (cigar_operation_length > max_indel_size) max_indel_size = cigar_operation_length;
+
+						// No need to incremente/decremente i and incremente l
+						// Deleted sequences are on the reference, not on the sequence alignment
+
+						break;
+
+					case BAM_CSOFT_CLIP:
+
+						// S = soft clip
+
+						clipped = 1;
+
+						// If read is NOT reverse complemented
+						if (!seq_strand){
+							for(j = 0; j < cigar_operation_length; j++, i++){
+								if (byqual_flag) {
+									read_stats[i][seq_qual[i]][1]++;
+								} else {
+									read_stats[i][0][1]++;
+								}
+							}
+						}
+						// If read is reverse complemented
+						else {
+							for(j = 0; j < cigar_operation_length; j++, i--){
+								if (byqual_flag) {
+									read_stats[i][seq_qual[i]][1]++;
+								} else {
+									read_stats[i][0][1]++;
+								}
+							}
+						}
+
+						break;
+
+					case BAM_CHARD_CLIP:
+
+						// H = hard clip
+
+						clipped = 1;
+
+						// If read is NOT reverse complemented
+						if (!seq_strand){
+							for(j = 0; j < cigar_operation_length; j++, i++){
+								if (byqual_flag) {
+									read_stats[i][seq_qual[i]][1]++;
+								} else {
+									read_stats[i][0][1]++;
+								}
+							}
+						}
+						// If read is reverse complemented
+						else {
+							for(j = 0; j < cigar_operation_length; j++, i--){
+								if (byqual_flag) {
+									read_stats[i][seq_qual[i]][1]++;
+								} else {
+									read_stats[i][0][1]++;
+								}
+							}
+						}
+
+						break;
+
+				}
+			}
+
+			// Parse the MD tag
+			gdl_string * tmp;
+			aidx_pos = tag_pos = 0;
+			tag_len = strlen(md_tag);
+
+			// While tag_pos indice inferior to MD tag length
+			while(tag_pos < tag_len){
+
+				// Get first indice k > tag_pos where md_tag[k] is NOT a digit
+				for(k = tag_pos; k < tag_len && isdigit(md_tag[k]); k++);
+
+				// (k-tag_pos)-length-string allocation
+				tmp = gdl_string_alloc(k-tag_pos);
+
+				// copy k-tag_pos characters from tag_pos position in md_tag (=md_tag+tag_pos) in tmp --> get operation length
+				strncpy(tmp, md_tag+tag_pos, k-tag_pos);
+
+				// Convert tmp in integer and incremente aidx_pos
+				aidx_pos += atoi(tmp);
+
+				// Place tag_pos on k indice
+				tag_pos = k;
+
+				// If k inferior to MD tag length
+				if (k < tag_len){
+
+					// If we have a deletion --> count the size of the deletion
+					if (md_tag[tag_pos] == '^'){
+
+						// Get first indice k > tag_pos+1 where md_tag[k] is a digit
+						for(k = tag_pos + 1; k < tag_len && !isdigit(md_tag[k]); k++);
+						tag_pos = k;
+
+					}
+					else {
+
+						// Substitution
+						if (!aidx[aidx_pos]) GDL_ERROR_VAL("MUST NOT BE ZERO !!!", GDL_EINVAL, GDL_EINVAL);
+
+						if (byqual_flag) {
+							read_stats[aidx[aidx_pos] - 1][seq_qual[aidx_pos]][2]++;
+						} else {
+							read_stats[aidx[aidx_pos] - 1][0][2]++;
+						}
+
+						if (error_by_read_flag) {
+							fprintf(stdout, "%s\t%ld\tsub\t.\t%d\n", bam1_qname(bamAlign), aidx[aidx_pos] - 1, clipped);
+						}
+
+						aidx_pos++;
+						tag_pos++;
+
+					}
+				}
+			}
+
+			nread++;
+			nclipped += clipped;
+
+			GDL_FREE(tmp);
+			GDL_FREE(aidx);
+
+			// next
+			bam_destroy1(bamAlign);
+			bamAlign = bam_init1();
+
+		}
+
+		if (error_by_read_flag) {
+			fprintf(stdout, "<stat_nread>\t%ld\t.\t.\t.\n", nread);
+			fprintf(stdout, "<stat_nclipped>\t%ld\t.\t.\t.\n", nclipped);
+		}
+
+		if (verbose_flag){
+			fprintf(stdout, "[bam_read] %ld alignements processed\n", alignment_counter);
+			fflush(stdout);
+		}
+
+		// Output sequencing error statistics
+		gdl_string * filename = gdl_string_sprintf("%s_errstats.txt", OUTPUT);
+		FILE * ostream = gdl_fileopen(filename, "w");
+		if (byqual_flag){
+			fprintf (ostream, "position\tquality\treads\tsubstitution\tinsertion\tdeletion\tclipped\n");
+			for(i = 0; i < MAX_READ_SIZE; i++){
+				for(j = 0; j < MAX_READ_QUAL; j++){
+					if (!read_stats[i][j][0]) continue;
+					fprintf (ostream, "%d\t%ld\t%ld\t%ld\t%ld\t%ld\t%ld\n", i+1, j, read_stats[i][j][0], read_stats[i][j][2], read_stats[i][j][3], read_stats[i][j][4], read_stats[i][j][1]);
+				}
+			}
+		} else {
+			fprintf (ostream, "position\treads\tsubstitution\tinsertion\tdeletion\tclipped\n");
+			for(i = 0; i < MAX_READ_SIZE; i++){
+				if (!read_stats[i][0][0]) break;
+				fprintf (ostream, "%d\t%ld\t%ld\t%ld\t%ld\t%ld\n", i+1, read_stats[i][0][0], read_stats[i][0][2], read_stats[i][0][3], read_stats[i][0][4], read_stats[i][0][1]);
+			}
+		}
+		gdl_fileclose(filename, ostream);
+		GDL_FREE (filename);
+
+		// Output indel statistics
+		filename = gdl_string_sprintf("%s_indels.txt", OUTPUT);
+		ostream = gdl_fileopen(filename, "w");
+		fprintf(ostream, "#insertion_number: %ld\n", indel_stats[0][0]);
+		fprintf(ostream, "#deletion_number: %ld\n", indel_stats[1][0]);
+		fprintf(ostream, "size\tinsertion\tdeletion\n");
+		for(i = 1; i <= max_indel_size; i++){
+			fprintf (ostream, "%d\t%ld\t%ld\n", i, indel_stats[0][i], indel_stats[1][i]);
+		}
+
+		gdl_fileclose(filename, ostream);
+		GDL_FREE (filename);
+		GDL_MATRIX_FREE (indel_stats, 2);
+
+		// Close the stream
+		bam_close(stream);
+	}
+	exit(0);
+}

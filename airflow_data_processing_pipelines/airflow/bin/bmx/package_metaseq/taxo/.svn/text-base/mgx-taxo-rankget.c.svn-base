@@ -1,0 +1,283 @@
+/*
+ *  mgx-taxosubset.c
+ *
+ *  $Author: mahep $, $Date: 2011/09/20 14:47:26 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+#include <ctype.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_io.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_seq_io.h>
+#include <gdl/gdl_list.h>
+
+#include "mixgenomix.h"
+#include "gzutil.h"
+#include "taxo.h"
+
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-taxo2dot";
+
+static int help_flag    = 0;
+static int verbose_flag = 0;
+static int no_missing_flag = 0;
+static int taxid_flag = 0;
+
+static gdl_string * TAXODB   = NULL;
+static gdl_string * INPUTFILE  = NULL;
+static gdl_string * OUTPUTFILE  = NULL;
+static gdl_string * RANK   = NULL;
+
+static struct option long_options[] =
+ {
+   /* These options set a flag. */
+   {"help", no_argument,          &help_flag, 1},
+   {"verbose", no_argument,       &verbose_flag, 1},
+   {"brief",   no_argument,       &verbose_flag, 0},
+   {"no-missing",   no_argument,       &no_missing_flag, 1},
+   {"taxid",   no_argument,       &taxid_flag, 1},
+  /* These options don't set a flag.
+      We distinguish them by their indices. */
+   {"output",   required_argument, 0, 'o'},
+   {"input",   required_argument, 0, 'i'},
+   {"taxo",   required_argument, 0, 't'},
+   {"rank",   required_argument, 0, 'r'},
+    {0, 0, 0, 0}
+ };
+
+static int
+parse_argument (int argc, char *argv[])
+{
+	int c;
+
+   while (1)
+     {
+
+       /* getopt_long stores the option index here. */
+       int option_index = 0;
+
+       c = getopt_long (argc, argv, "o:i:t:r:",
+                        long_options, &option_index);
+
+       /* Detect the end of the options. */
+       if (c == -1)
+         break;
+
+       switch (c)
+         {
+         case 0:
+           /* If this option set a flag, do nothing else now. */
+           if (long_options[option_index].flag != 0)
+             break;
+           printf ("option %s", long_options[option_index].name);
+           if (optarg)
+             printf (" with arg %s", optarg);
+           printf ("\n");
+           break;
+
+         case 'o':
+           OUTPUTFILE = gdl_string_clone (optarg);
+           break;
+         case 'i':
+           INPUTFILE = gdl_string_clone (optarg);
+           break;
+         case 'r':
+		   RANK = gdl_string_clone (optarg);
+		   break;
+         case 't':
+		   TAXODB = gdl_string_clone (optarg);
+		   break;
+		 case '?':
+           GDL_ERROR_VAL ("Unknown arguments", GDL_EINVAL, -1);
+         default:
+           GDL_ERROR_VAL ("Bad arguments", GDL_EINVAL, -1);
+         }
+     }
+}
+
+static int
+check_argument (void)
+{
+	if (INPUTFILE == 0)
+	{
+		GDL_ERROR_VAL ("No input file (list of taxons) provided",
+				GDL_FAILURE,
+				1);
+	}
+	if (OUTPUTFILE == 0)
+	{
+		GDL_ERROR_VAL ("No output file provided",
+				GDL_FAILURE,
+				1);
+	}
+	if (RANK == 0)
+	{
+		GDL_ERROR_VAL ("No minimum rank provided",
+				GDL_FAILURE,
+				1);
+	}
+	if (TAXODB == 0)
+	{
+		GDL_ERROR_VAL ("No taxonomy provided",
+				GDL_FAILURE,
+				1);
+	}
+	return GDL_SUCCESS;
+}
+
+
+static int
+help (void)
+{
+   print_header (PROGRAM);
+   printf ("\n");
+   printf ("This program casts a list of taxa to a list defined at a minimum taxonomic rank\n");
+   printf ("(e.g., convert species-level to genus-level taxids)\n");
+   printf ("--help\tDisplay a brief help on program usage\n");
+   printf ("--verbose\tOutput message on standard output to see what the program is doing\n");
+   printf ("\n");
+   printf ("--input or -i\tThe input taxon file (txt format)\n");
+   printf ("--output or -o\tThe output taxon file (txt format)\n");
+   printf ("--rank or -r\tThe minimum rank to consider\n");
+   printf ("--taxo or -t\tThe taxonomy DB\n");
+   printf ("--taxid Flag specifying list of taxi (default format : names)\n");
+}
+
+
+
+int taxon2minrank(mgx_taxonomy * t, size_t index){
+if( strcmp( t->ranks->rank_names[t->ranks->rid2tx[index]],RANK) == 0){
+		return(index);
+	}else{
+		if(t->taxons[index]->parent == NULL){
+			return(0);
+		}else{
+			taxon2minrank(t, t->taxons[index]->parent->index);
+		}
+	}
+}
+
+
+int
+main (int argc, char *argv[])
+{
+  int status;
+
+  parse_argument (argc, argv);
+
+  if (help_flag)
+  {
+  	  exit (help());
+  }
+
+  status = check_argument ();
+
+  if (status == GDL_SUCCESS)
+  {
+
+		mgx_taxonomy * taxonomy;
+        FILE * stream;
+        size_t i, j, n, ind;
+        gdl_list      * taxons;
+        gdl_string * tx;
+    	gdl_string    * line = 0;
+    	mgx_taxonomy_lookup_index *taxon_index;
+    	mgx_taxon *tax;
+        gdl_list_itr * itr;
+
+        // read taxonomy
+	    stream   = gdl_fileopen (TAXODB, "r");
+	    taxonomy = mgx_taxonomy_fread (stream);
+	    gdl_fileclose (TAXODB, stream);
+
+	    if(verbose_flag){
+	    	printf("\nTaxonomy succesfully read, summary : \n");
+			printf("\t-number of nodes = %d\n", taxonomy->ntaxon);
+			printf("\t-maximum depth = %d\n", taxonomy->maxdepth);
+			printf("\t-root node ID = %s\n", taxonomy->root->names[0]);
+	    }
+
+	    // read list of taxons to subset
+	    stream = gdl_fileopen (INPUTFILE, "r");
+    	taxons      = gdl_list_alloc (gdl_list_default);
+    	while(gdl_getline (&line, &n, stream)!=-1)
+    	{
+    		i=j=0;
+    		tx = gdl_string_next_token (line, n, &i, &j);
+    		//gdl_list_append (taxons, tx, 0);
+    		gdl_list_push_back(taxons, tx, 0);
+    		gdl_string_free (line);
+    		line=0;
+    	}
+    	// check list of taxon read
+    	if(verbose_flag){
+    		printf("Number of taxons read = %d\n", gdl_list_size(taxons) );
+    	}
+
+    	// build hash-table between provided taxons id (names or taxid) and their indices
+		taxon_index = mgx_taxonomy_taxon_lookup_build(taxonomy, "id");
+    	//printf("\n***hash-table ok ***\n");
+
+
+    	// open output file
+    	stream = gdl_fileopen (OUTPUTFILE, "w");
+    	// write header
+    	// process each taxon
+    	itr = gdl_list_iterator_front (taxons);
+    	do{
+    		tax = mgx_taxonomy_lookup(taxonomy, taxon_index, gdl_list_iterator_value (itr));
+    		if(tax == 0){
+    			printf("ERROR: taxon %s not found in the taxonomy (writing 'unknown_taxid' in the output file)\n", gdl_list_iterator_value (itr));
+    			//GDL_ERROR_VAL ("EXITING", GDL_FAILURE, 1);
+    			fprintf(stream, "unknown_taxid\n");
+    		}
+    		else
+    		{
+    			ind = taxon2minrank(taxonomy, tax->index);
+    			if(ind == 0){
+				if(verbose_flag){
+	    				printf("WARNING : reached root for taxon %d (name = %s ; rank = %s)\n", tax->id, tax->names[0],  taxonomy->ranks->rank_names[taxonomy->ranks->rid2tx[tax->index]]);
+				}
+    				if(taxid_flag){
+    					fprintf(stream, "%d\n", atoi(gdl_list_iterator_value (itr)));
+    				}else{
+    					fprintf(stream, "%s\n", gdl_list_iterator_value (itr));
+    				}
+    			}
+    			else{
+    				if(taxid_flag){
+    					fprintf(stream, "%d\n", taxonomy->taxons[ind]->id);
+    				}else{
+    					fprintf(stream, "%s\n", taxonomy->taxons[ind]->names[0]);
+    				}
+    			}
+
+    		}
+    	}while (gdl_list_iterator_next (itr));
+
+    	// close output file
+    	gdl_fileclose (OUTPUTFILE, stream);
+
+  }
+
+  exit (0);
+}
+

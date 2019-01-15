@@ -1,0 +1,301 @@
+/*
+ *  mgx-bfclass.c
+ *
+ *  $Author: veyriejb $, $Date: 2011/05/12 17:13:03 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+#include <ctype.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_io.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_seq_io.h>
+
+#include "mixgenomix.h"
+#include "gzutil.h"
+#include "bloom.h"
+
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-bfclass";
+
+static int help_flag          = 0;
+static int verbose_flag       = 0;
+static int paired_end_flag    = 0;
+static int sparse_output_flag = 0;
+
+static gdl_string * INPUT    = NULL;
+static gdl_string * OUTPUT   = NULL;
+static gdl_string * FILTERS  = NULL;
+static size_t KMERSIZE       = 21;
+
+static struct option long_options[] =
+ {
+   /* These options set a flag. */
+   {"help", no_argument,          &help_flag, 1},
+   {"verbose", no_argument,       &verbose_flag, 1},
+   {"brief",   no_argument,       &verbose_flag, 0},
+   {"paired-end",   no_argument,       &paired_end_flag, 1},
+   {"sparse-output",   no_argument,       &sparse_output_flag, 1},
+   /* These options don't set a flag.
+      We distinguish them by their indices. */
+   {"output",   required_argument, 0, 'o'},
+   {"input",   required_argument, 0, 'i'},
+   {"filters",   required_argument, 0, 'f'},
+   {"kmer-size",   required_argument, 0, 'k'},
+   {0, 0, 0, 0}
+ };
+
+static int
+parse_argument (int argc, char *argv[])
+{
+	int c;
+
+   while (1)
+     {
+
+       /* getopt_long stores the option index here. */
+       int option_index = 0;
+
+       c = getopt_long (argc, argv, "i:o:k:f:",
+                        long_options, &option_index);
+
+       /* Detect the end of the options. */
+       if (c == -1)
+         break;
+
+       switch (c)
+         {
+         case 0:
+           /* If this option set a flag, do nothing else now. */
+           if (long_options[option_index].flag != 0)
+             break;
+           printf ("option %s", long_options[option_index].name);
+           if (optarg)
+             printf (" with arg %s", optarg);
+           printf ("\n");
+           break;
+
+ 		 case 'i':
+           INPUT = gdl_string_clone (optarg);
+           break;
+         case 'o':
+           OUTPUT = gdl_string_clone (optarg);
+           break;
+         case 'f':
+		   FILTERS = gdl_string_clone (optarg);
+		   break;
+         case 'k':
+		   KMERSIZE = (size_t) atol (optarg);
+		   break;
+         case '?':
+           GDL_ERROR_VAL ("Unknown arguments", GDL_EINVAL, -1);
+         default:
+           GDL_ERROR_VAL ("Bad arguments", GDL_EINVAL, -1);
+         }
+     }
+}
+
+static int
+check_argument (void)
+{
+
+	if (INPUT == 0)
+	{
+		GDL_ERROR_VAL ("No input file provided",
+					   GDL_FAILURE,
+					   1);
+	}
+	if (FILTERS == 0)
+	{
+		GDL_ERROR_VAL ("No filters file provided",
+					   GDL_FAILURE,
+					   1);
+	}
+	if (OUTPUT == 0)
+	{
+		GDL_ERROR_VAL ("No output file provided",
+					   GDL_FAILURE,
+					   1);
+	}
+
+	return GDL_SUCCESS;
+}
+
+static int
+help (void)
+{
+   print_header (PROGRAM);
+   printf ("Options without arguments:\n");
+   printf ("--help\tDisplay a brief help on program usage\n");
+   printf ("--verbose\tOutput message on standard output to see what the program is doing\n");
+   printf ("\n");
+   printf ("--sparse-output\tOutput classifier results in sparse format\n");
+   printf ("\n");
+   printf ("Options with arguments:\n");
+   printf ("--input or -i\tA fasta file of sequence to classify\n");
+   printf ("--output or -o\tThe output Bloom filter file\n");
+   printf ("--kmer-size or -k\tThe length of the kmer to insert into the Bloom filter (default is 21, max is 31)\n");
+   printf ("--filters or -f\tFile with a list of filters to load\n");
+}
+
+
+// inline function
+#define CLASSIFY(c,header,i,kmer,bloom,output){if (isblank (c)) {if (header) fputc(c, output);continue;} \
+										else if (c=='>'){ \
+											if (i){ \
+												fprintf(output, "\t"); \
+												mgx_bloom_classifier_item_output(output, bloom, sparse_output_flag); \
+											} \
+											mgx_bloom_classifier_item_init(bloom); \
+											i=0; \
+											header=1; \
+										} else if ((c=='\n' || c =='\r') && header){ \
+											header=0; \
+										} else if ((c!='\n' && c !='\r') && !header){\
+											kmer[i]=c; \
+											if (i == bloom->k-1) \
+											{ \
+												mgx_bloom_classifier_item_slide (bloom, kmer); \
+												for(j = 0; j < bloom->k-1; j++) kmer[j] = kmer[j+1]; \
+											} else i++; \
+										} else if (header) { \
+											fputc(c, output);}}
+
+int
+mgx_fasta_on_line_bloom_classify_0 (gzFile stream, mgx_bloom_classifier * bloom, FILE * output)
+{
+	size_t i = 0, j;
+	int c,header=0;
+	gdl_string * kmer = gdl_string_alloc (bloom->k);
+
+	while ((c=gzgetc(stream))!=EOF)
+	{
+		CLASSIFY(c,header,i,kmer,bloom,output);
+	}
+	// last sequence
+	fprintf(output, "\t");
+	mgx_bloom_classifier_item_output(output, bloom, sparse_output_flag);
+
+	return GDL_SUCCESS;
+}
+
+int
+mgx_fasta_on_line_bloom_classify_1 (FILE * stream, mgx_bloom_classifier * bloom, FILE * output)
+{
+	size_t i = 0, j;
+	int c,header=0;
+	gdl_string * kmer = gdl_string_alloc (bloom->k);
+
+	while ((c=fgetc(stream))!=EOF)
+	{
+		CLASSIFY(c,header,i,kmer,bloom,output);
+	}
+	// last sequence
+	fprintf(output, "\t");
+	mgx_bloom_classifier_item_output(output, bloom, sparse_output_flag);
+
+	return GDL_SUCCESS;
+}
+
+int
+mgx_fasta_on_line_bloom_classify (const gdl_string * filename, const gdl_boolean gzip, mgx_bloom_classifier * bloom, FILE * output)
+{
+	if (gzip)
+	{
+		gzFile stream = gzopen (filename, "r");
+		if (stream)
+		{
+			mgx_fasta_on_line_bloom_classify_0(stream, bloom, output);
+			gzclose (stream);
+		}
+	}
+	else
+	{
+		FILE * stream = gdl_fileopen (filename, "r");
+		if (stream)
+		{
+			mgx_fasta_on_line_bloom_classify_1(stream, bloom, output);
+			gdl_fileclose (filename, stream);
+		}
+	}
+}
+
+
+int
+main (int argc, char *argv[])
+{
+  int status;
+
+  parse_argument (argc, argv);
+
+  if (help_flag)
+  {
+  	  exit (help());
+  }
+
+  status = check_argument ();
+
+  if (status == GDL_SUCCESS)
+  {
+	    gdl_runtime * runtime;
+	    FILE * stream;
+
+	    runtime = runtime_setup ();
+
+	    // Read the filters and their labels
+	    if (verbose_flag)
+	    {
+	    	fprintf(stdout, "--\n");
+			fprintf(stdout, "Bloom Classifier: load filters (this can take some times...)");
+		}
+	    mgx_bloom_classifier * bloom = mgx_bloom_classifier_alloc (FILTERS, KMERSIZE);
+	    if (verbose_flag)
+	    {
+	    	fprintf(stdout, " ==> [ DONE ]\n");
+	    	fprintf(stdout, "--\n");
+	    }
+	    if (!bloom)
+	    {
+	    	GDL_ERROR_VAL ("Unable to create the bloom filter classifier", GDL_FAILURE, GDL_FAILURE);
+	    }
+	    // On-line classification of sequences
+	    stream = gdl_fileopen (OUTPUT, "w");
+	    if (paired_end_flag)
+	    {
+
+	    }
+	    else
+	    {
+	    	 if (verbose_flag)
+			 {
+				fprintf(stdout, "--\n");
+				fprintf(stdout, "Classify sequences\n");
+				fprintf(stdout, "--\n");
+			 }
+	    	 mgx_bloom_classifier_header_output (stream, bloom, sparse_output_flag);
+	    	 mgx_fasta_on_line_bloom_classify (INPUT, is_gzipped(INPUT), bloom, stream);
+	    }
+	    gdl_fileclose (OUTPUT, stream);
+		// Save the runtime
+		runtime_setdown (runtime);
+  }
+
+  exit (0);
+}

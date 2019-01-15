@@ -1,0 +1,178 @@
+/*
+ *  bmx_taxo.c
+ *
+ *  $Author: mahep $, $Date: 2011/08/18 09:21:15 $, $Version$
+ *
+ *  MetagenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+#include <stdint.h>
+#include <limits.h>
+#include <stdarg.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_types.h>
+#include <gdl/gdl_io.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_hash.h>
+#include <gdl/gdl_list.h>
+
+#include "taxo.h"
+
+/**
+fields:
+	tax_id
+ 	parent tax_id
+*/
+typedef struct
+{
+	gdl_string * tax_id;
+	gdl_string * parent_tax_id;
+} mgx_taxon_simple;
+
+static void
+mgx_taxon_simple_free (mgx_taxon_simple * t)
+{
+	if (t)
+	{
+		GDL_FREE (t->tax_id);
+		GDL_FREE (t->parent_tax_id);
+		GDL_FREE (t);
+	}
+}
+
+static void
+mgx_taxonomy_factory_build_tree (mgx_taxonomy * taxo, mgx_taxon * parent, const size_t depth, gdl_hashtable * taxon_table)
+{
+	mgx_taxon_simple  * tn = (mgx_taxon_simple *)parent->extra;
+	gdl_list * children = (gdl_list *)gdl_hashtable_lookup (taxon_table, tn->tax_id);
+
+	// Add depth + id mapping
+	mgx_taxon_add_name (parent, tn->tax_id);
+	parent->depth = depth;
+	parent->extra = 0;
+
+	if (children && gdl_list_size(children))
+	{
+		size_t i=0;
+
+		parent->nchild   = gdl_list_size (children);
+		parent->children = GDL_MALLOC (mgx_taxon *, parent->nchild);
+
+		gdl_list_itr * itr = gdl_list_iterator_front (children);
+		do
+		{
+			mgx_taxon * child     = (mgx_taxon *) gdl_list_iterator_value (itr);
+			child->parent         = parent;
+			parent->children[i++] = child;
+			// Recursion
+			mgx_taxonomy_factory_build_tree (taxo, child, depth+1, taxon_table);
+		}
+		while (gdl_list_iterator_next (itr));
+		gdl_list_iterator_free (itr);
+
+		gdl_list_free (children);
+	}
+	// clean
+	mgx_taxon_simple_free (tn);
+}
+
+static mgx_taxonomy *
+mgx_taxonomy_factory_simple_read_nodes (const gdl_string * filename)
+{
+	FILE * stream;
+	size_t i,j,ntoken,n,max_tax_id=0;
+	gdl_hashtable * taxon_table;
+	gdl_list      * taxons, * taxon_children;
+	gdl_string   ** tokens;
+	gdl_string    * line = 0;
+	mgx_taxonomy * t = 0;
+
+	stream = gdl_fileopen (filename, "r");
+
+	taxons      = gdl_list_alloc (gdl_list_default);
+	while(gdl_getline (&line, &n, stream)!=-1)
+	{
+		i=j=0;
+		mgx_taxon_simple * tx = GDL_MALLOC (mgx_taxon_simple, 1);
+
+		tx->tax_id        = gdl_string_next_token (line, n, &i, &j);
+		tx->parent_tax_id = gdl_string_next_token (line, n, &i, &j);
+
+		gdl_list_append (taxons, tx, 0);
+
+		gdl_string_free (line);
+		line=0;
+	}
+	gdl_fileclose (filename, stream);
+	// number of taxons
+	n        = gdl_list_size (taxons);
+	t        = mgx_taxonomy_alloc (n);
+	// for each taxon PUSH(@{HASH{taxon->parent_tax_id}},taxon->tax_id) then goes from the root recursively
+	i           = 0;
+	taxon_table = gdl_hashtable_alloc (gdl_hash_default, n);
+	gdl_list_itr * taxon_itr = gdl_list_iterator_front (taxons);
+	do
+	{
+		mgx_taxon_simple * taxon_simple = gdl_list_iterator_value (taxon_itr);
+		// Alloc taxon
+		t->taxons[i]        = mgx_taxon_alloc (i);
+		t->taxons[i]->extra = taxon_simple;
+		// ROOT
+		if (!strcmp(taxon_simple->tax_id, taxon_simple->parent_tax_id))
+		{
+	   	    t->root = t->taxons[i];
+		}
+        else
+		{
+			// Add to the taxon_children of the parent
+			if ((taxon_children = gdl_hashtable_lookup (taxon_table, taxon_simple->parent_tax_id))==0)
+			{
+			   taxon_children = gdl_list_alloc (gdl_list_default);
+			   gdl_hashtable_add (taxon_table, taxon_simple->parent_tax_id, taxon_children, 0);
+			}
+			gdl_list_append (taxon_children, t->taxons[i], 0);
+		}
+		i++;
+	}
+	while (gdl_list_iterator_next (taxon_itr));
+	gdl_list_iterator_free (taxon_itr);
+
+	// Recursively build the tree
+	mgx_taxonomy_factory_build_tree (t, t->root, 0, taxon_table);
+	// Clean the buffers
+	gdl_list_free (taxons);
+	gdl_hashtable_free (taxon_table);
+
+	return t;
+}
+/**
+ * Read a simple taxonomy as a two column tabulated file (child-->parent)
+ */
+mgx_taxonomy *
+mgx_taxonomy_factory_simple_read (const gdl_string * file)
+{
+	mgx_taxonomy * taxo;
+
+	taxo = mgx_taxonomy_factory_simple_read_nodes (file);
+
+	return taxo;
+}
+
+int
+mgx_taxonomy_factory_simple_write (const mgx_taxonomy * T, const gdl_string * output_stem)
+{
+
+}
+
+static const mgx_taxonomy_factory _mgx_taxonomy_factory_simple =
+{
+	"simple",
+	&mgx_taxonomy_factory_simple_read,
+	&mgx_taxonomy_factory_simple_write
+};
+
+const mgx_taxonomy_factory * mgx_taxonomy_simple_factory = &_mgx_taxonomy_factory_simple;
+

@@ -1,0 +1,326 @@
+/*
+ *  header.c
+ *
+ *  $Author: tournoum $, $Date: 2014/10/06 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_io.h>
+#include <gdl/gdl_igdb_genome.h>
+
+#include "mixgenomix.h"
+
+#include "header.c"
+
+
+#include "gzutil.h"
+
+static gdl_string * PROGRAM = "mgx-seq-epsvw2taxons";
+
+static int help_flag    = 0;
+static int verbose_flag = 0;
+static int debug_flag = 0;
+
+static gdl_string * OUTPUT = NULL;
+static gdl_string * INPUT  = NULL;
+static gdl_string * DICO  = NULL;
+static double THRESHOLD = 0.5;
+
+
+static struct option long_options[] =
+{
+		/* These options set a flag. */
+		{"help", no_argument,          &help_flag, 1},
+		{"verbose", no_argument,       &verbose_flag, 1},
+		{"debug", no_argument,         &debug_flag, 1},
+		{"brief",   no_argument,       &verbose_flag, 0},
+		/* These options don't set a flag.
+         We distinguish them by their indices. */
+		{"output",   required_argument, 0, 'o'},
+		{"input",   required_argument, 0, 'i'},
+		{"threshold",   required_argument, 0, 't'},
+		{"dico",   required_argument, 0, 'd'},
+		{0, 0, 0, 0}
+};
+
+static int
+parse_argument (int argc, char *argv[])
+{
+	int c;
+
+	while (1)
+	{
+
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+
+		c = getopt_long (argc, argv, "o:i:t:d:",
+				long_options, &option_index);
+
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+
+		switch (c)
+		{
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf ("option %s", long_options[option_index].name);
+			if (optarg)
+				printf (" with arg %s", optarg);
+			printf ("\n");
+			break;
+		case 'o':
+			OUTPUT = gdl_string_clone (optarg);
+			break;
+		case 'i':
+			INPUT = gdl_string_clone (optarg);
+			break;
+		case 't':
+			THRESHOLD= (double) atof (optarg);
+			break;
+		case 'd':
+			DICO= gdl_string_clone (optarg);
+			break;
+		case '?':
+			GDL_ERROR_VAL ("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL ("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+static int
+check_argument (void)
+{
+	
+	return GDL_SUCCESS;
+}
+
+static int
+help (void)
+{
+	print_header (PROGRAM);
+	printf ("\n");
+	printf ("--help\tParse an output of mgx-seq-kmerndpred to output all the taxons that have likelihood close to the best taxib\n");
+	printf ("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf ("--debug\tMore detailed output message (e.g, for debugging purposes)\n");
+	printf ("\n");
+	printf ("--input or -i\t gzipped input file = output file from mgx-seq-kmerndpred\n");
+	printf ("--output or -o\t output tab separated file. The first column corresponds to the read number and the second column to the hits. If there are several hits, they are comma (;) separated\n");
+	printf ("--threshold or -t\t threshold to specify the list of hits to keep \n");
+	printf ("--dico or -d\t path to the dictionnary file that make the mapping between the index of the class and the taxid. This is a 2 columns tab separated file\n");
+}
+
+
+
+
+
+
+
+
+
+
+int
+main (int argc, char *argv[])
+{
+
+	int status;
+
+	parse_argument (argc, argv);
+
+	if (help_flag)
+	{
+		exit (help());
+	}
+
+	if(debug_flag)
+	{
+		verbose_flag = 1;
+	}
+
+	status = check_argument ();
+
+	if (status == GDL_SUCCESS)
+	{
+	
+	FILE * streamDico;
+	streamDico = gdl_fileopen (DICO, "r");
+
+	// reading DICO file
+	gdl_string    * line = 0;
+	gdl_string * taxID, *classID;
+	size_t n, cptr = 0, i, j;
+	
+	printf("Reading DICO ...");
+	
+	// count the number of lines in the DICO file
+	while(gdl_getline (&line, &n, streamDico)!=-1)
+	{
+		cptr++;
+	}
+	//printf("There are %d lines in the dico file\n",cptr);
+	gdl_fileclose(DICO, streamDico);
+	
+	// create a table of correspondance between classID and taxonsID
+	int * taxonsTable = 0;
+	taxonsTable=GDL_CALLOC(int, cptr);
+	int tableIndex = 0;
+	int taxID_int = 0; // to convert the taxonID string into interger
+	streamDico = gdl_fileopen (DICO, "r");
+	cptr = 0;
+	line = 0;
+	n=0;
+	
+	// process each line
+	while(gdl_getline (&line, &n, streamDico)!=-1)
+	{
+		cptr++;
+	   	// extract taxID and classID
+		i=j=0;
+		taxID = gdl_string_next_token (line, n, &i, &j);
+		classID = gdl_string_next_token (line, n, &i, &j);
+		
+		tableIndex = atoi(classID) - 1;
+		taxID_int = atoi(taxID);
+		
+		// put in the conversion table
+		taxonsTable[tableIndex] = taxID_int;
+				
+	    // free lines
+	    gdl_string_free(taxID);
+	    gdl_string_free(classID);
+	    gdl_string_free(line);
+	    line = 0;
+	    classID = 0;
+	    taxID = 0;
+	}
+	
+	gdl_fileclose(DICO, streamDico);
+	printf("[OK] \n");
+	
+
+	// reading the vw score file
+	FILE * stream;
+	stream = gdl_fileopen (INPUT, "r");
+	printf("Reading scores ...");
+	FILE * streamOutputFile;
+	// opening the output file to save the results
+	streamOutputFile = gdl_fileopen(OUTPUT, "w");
+	
+	line = 0;
+	cptr = 0;
+	size_t ntok, nscore = 0;
+    gdl_string ** toks;
+	gdl_string ** scores;
+	float * score_table = 0;
+	float max_score[1];
+	size_t max_score_index[1];
+	size_t nbHit = 0;
+	double final_threshold = 0;
+	// process each line
+   	while(gdl_getline (&line, &n, stream)!=-1)
+   	{
+   		cptr++;
+		// extract fields
+		ntok = 0;
+		toks = gdl_string_split(line, " ", &ntok);
+		
+		score_table=GDL_CALLOC(float, ntok);
+		
+		// splitting each token 
+		for(i =0; i < ntok ; i++) {
+			nscore = 0;
+			scores = gdl_string_split(toks[i], ":", &nscore);
+			// saving the scores in a table			
+			score_table[i] = atof(scores[1]);
+			
+			if (nscore != 2) {
+				GDL_ERROR_VAL("PROBLEM WHILE SPLITTING SCORE VALUES", GDL_FAILURE, 1);
+			}
+			gdl_string_free(scores[0]);
+			gdl_string_free(scores[1]);
+			GDL_FREE(scores);
+		}
+		
+		
+		// find the maximum log lik value
+		int res_sort = gdl_sort_float_largest(max_score, 1, score_table, 1, ntok);
+		int res_sort_index = gdl_sort_float_largest_index (max_score_index, 1, score_table, 1, ntok);
+		if(res_sort !=0 || res_sort_index!=0) {
+			printf("PROBLEM WITH SORTING SCORE VALUES");
+		}
+		
+		// compute the relative difference to the maxium score value
+		if(max_score[0] >=0) {
+			final_threshold =max_score[0] - max_score[0]*THRESHOLD ;
+		} else {
+			final_threshold =max_score[0] + max_score[0]*THRESHOLD ;
+		}
+		
+		
+		//printf("final threshold %f\n",final_threshold);
+		// printing the read ID and the best hit
+		fprintf(streamOutputFile,"%d\t",cptr);
+		nbHit = 0;
+		for(i =0; i < ntok ; i++) {
+			if(score_table[i] >= final_threshold)
+			{	
+				nbHit ++;
+				if(nbHit == 1) {
+					//printf("%d",taxonsTable[i]);
+					fprintf(streamOutputFile,"%d",taxonsTable[i]);
+				} else {
+					//printf(";%d",taxonsTable[i]);
+				fprintf(streamOutputFile,";%d",taxonsTable[i]);
+				}
+				
+			}
+		}
+		fprintf(streamOutputFile,"\n"); 
+		//printf("\n");
+		
+		
+		
+		// free tokens
+		for(i = 0; i < ntok; i++){
+			gdl_string_free(toks[i]);
+			toks[i] = 0; // do not hurt ...
+		}
+		GDL_FREE(toks);
+		//printf("toks freeing ok\n");
+	
+		// free line
+		gdl_string_free (line);
+		line=0;
+		
+		// free score table
+		GDL_FREE(score_table);
+	}
+
+	gdl_fileclose(INPUT, stream);
+	gdl_fileclose(OUTPUT, streamOutputFile);
+	
+	printf("[OK]\n");
+	GDL_FREE(taxonsTable);
+	
+	}
+	exit (0);
+}

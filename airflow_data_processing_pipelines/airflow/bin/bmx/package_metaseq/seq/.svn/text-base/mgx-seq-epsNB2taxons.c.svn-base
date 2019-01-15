@@ -1,0 +1,291 @@
+/*
+ *  header.c
+ *
+ *  $Author: tournoum $, $Date: 2014/10/06 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_io.h>
+#include <gdl/gdl_igdb_genome.h>
+
+#include "mixgenomix.h"
+
+#include "header.c"
+
+
+#include "gzutil.h"
+
+static gdl_string * PROGRAM = "mgx-seq-epsNB2taxons";
+
+static int help_flag    = 0;
+static int verbose_flag = 0;
+static int debug_flag = 0;
+static int fcp_flag = 0;
+
+static gdl_string * OUTPUT = NULL;
+static gdl_string * INPUT  = NULL;
+static double THRESHOLD = 2;
+
+
+static struct option long_options[] =
+{
+		/* These options set a flag. */
+		{"help", no_argument,          &help_flag, 1},
+		{"verbose", no_argument,       &verbose_flag, 1},
+		{"debug", no_argument,         &debug_flag, 1},
+		{"brief",   no_argument,       &verbose_flag, 0},
+                {"fcp",   no_argument,       &fcp_flag, 1},
+		/* These options don't set a flag.
+         We distinguish them by their indices. */
+		{"output",   required_argument, 0, 'o'},
+		{"input",   required_argument, 0, 'i'},
+		{"threshold",   required_argument, 0, 't'},
+		{0, 0, 0, 0}
+};
+
+static int
+parse_argument (int argc, char *argv[])
+{
+	int c;
+
+	while (1)
+	{
+
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+
+		c = getopt_long (argc, argv, "o:i:t:",
+				long_options, &option_index);
+
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+
+		switch (c)
+		{
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf ("option %s", long_options[option_index].name);
+			if (optarg)
+				printf (" with arg %s", optarg);
+			printf ("\n");
+			break;
+		case 'o':
+			OUTPUT = gdl_string_clone (optarg);
+			break;
+		case 'i':
+			INPUT = gdl_string_clone (optarg);
+			break;
+		case 't':
+			THRESHOLD= (double) atof (optarg);
+			break;
+		case '?':
+			GDL_ERROR_VAL ("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL ("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+static int
+check_argument (void)
+{
+
+	if (THRESHOLD >=1) {
+		GDL_ERROR_VAL("THRESHOLD SHOULD BE < 1", GDL_FAILURE, 1);
+	}
+	return GDL_SUCCESS;
+}
+
+static int
+help (void)
+{
+	print_header (PROGRAM);
+	printf ("\n");
+	printf ("--help\tParse an output of mgx-seq-kmerndpred to output all the taxons that have likelihood close to the best taxib\n");
+	printf ("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf ("--debug\tMore detailed output message (e.g, for debugging purposes)\n");
+	printf ("\n");
+	printf ("--input or -i\t gzipped input file = output file from mgx-seq-kmerndpred\n");
+	printf ("--output or -o\t output tab separated file. The first column corresponds to the read number and the second column to the hits. If there are several hits, they are comma (;) separated\n");
+	printf ("--threshold or -t\t threshold to specify the list of hits to keep ; treshold should be between 0 and 1\n");
+        printf ("--fcp\tinput data provided by fcp (tab separated + 3 additional columns) \n");
+}
+
+
+
+
+
+int
+main (int argc, char *argv[])
+{
+
+	int status;
+
+	parse_argument (argc, argv);
+
+	if (help_flag)
+	{
+		exit (help());
+	}
+
+	if(debug_flag)
+	{
+		verbose_flag = 1;
+	}
+
+	status = check_argument ();
+
+	if (status == GDL_SUCCESS)
+	{
+
+
+	FILE * stream;
+	stream = gdl_fileopen (INPUT, "r");
+	if(verbose_flag)
+		printf("file opened\n");
+	FILE * streamOutputFile;
+	// opening the output file to save the results
+	streamOutputFile = gdl_fileopen(OUTPUT, "w");
+	
+	gdl_string    * line = 0;
+	size_t n, cptr = 0, i, ntok, ntaxons, offset;
+    gdl_string ** toks;
+	float log_lik = 0;
+	float max_log_lik[1];
+	size_t max_log_lik_index[1];
+	float * log_lik_table =0;
+	//float * rel_prop_2_maxLL = 0;
+	gdl_string ** taxonsID =0;
+
+	offset = 0;
+	if(fcp_flag)
+		offset = 3;
+
+	// process each line
+   	while(gdl_getline (&line, &n, stream)!=-1)
+   	{
+   		cptr++;
+		// extract fields
+		ntok = 0;
+		//toks = gdl_string_split(line, ";", &ntok);
+		if(fcp_flag){
+	                toks = gdl_string_split(line, "\t", &ntok);
+		}else{
+			toks = gdl_string_split(line, ";", &ntok);
+		}
+		// print
+		/*		
+		printf("-->line no %d  : number of tokens = %d\n", cptr, ntok);
+		for(i = 0; i < ntok ; i++){
+			printf("\t-token no %d = %s\n", i, toks[i]);
+		}
+		*/
+		// save the taxonID if it is the first line
+		if(cptr == 1) {
+			ntaxons = ntok;
+			if(fcp_flag){
+				ntaxons = ntaxons - offset;
+			}
+			taxonsID = GDL_CALLOC(gdl_string *, ntaxons);
+			for(i = 0; i < ntaxons ; i++){
+				gdl_string * taxID = gdl_string_alloc(strlen(toks[i+offset]));
+				//printf("\t-token no %d = %s\n", i, toks[i]);
+				strcpy(taxID, toks[i+offset]);
+				//printf("\t-size of token no %d = %d\n", i, strlen(toks[i]));
+				taxonsID[i] = taxID;
+			}
+		}
+		else {
+			// transform string into double and put all the log_lik values in the log_lik_table
+			log_lik_table=GDL_CALLOC(float, ntaxons);
+			//rel_prop_2_maxLL=GDL_CALLOC(float, ntok);
+			for(i = 0; i < ntaxons ; i++) {
+				log_lik = atof(toks[i+offset]);
+				log_lik_table[i] = (float) log_lik;
+				//printf("\t-float value of token no %d = %f\n", i, log_lik_table[i]);
+			}
+			// find the maximum log lik value
+			int res_sort = gdl_sort_float_largest(max_log_lik, 1, log_lik_table, 1, ntaxons);
+			int res_sort_index = gdl_sort_float_largest_index (max_log_lik_index, 1, log_lik_table, 1, ntaxons);
+			if(res_sort !=0 || res_sort_index!=0) {
+				printf("PROBLEM WITH SORTING LL VALUES");
+			}
+			//printf("\t-The index of maximum log lik value is %d\n", max_log_lik_index[0]);
+			
+			// printing the read ID and the best hit
+			fprintf(streamOutputFile,"%d\t%s",cptr-1,taxonsID[max_log_lik_index[0]]);
+			
+			// compute the relative difference to the maxium LL value
+			double final_threshold = log(1 - THRESHOLD) + max_log_lik[0];
+			
+			for(i = 0; i < ntaxons ; i++) {
+				//rel_prop_2_maxLL[i] = 1 - exp( log_lik_table[i] - max_log_lik[0]);
+				//printf("\t-Relative prop to the max for token %d is  %f\n", i, rel_prop_2_maxLL[i]);
+				//if( rel_prop_2_maxLL[i] !=0 && rel_prop_2_maxLL[i] !=1 && rel_prop_2_maxLL[i] < THRESHOLD)
+				if(log_lik_table[i] >= final_threshold && i!=max_log_lik_index[0])
+				{
+					//printf("\t-The maximum log lik value is %f ;  the current LL value is %f; the rel prop is %f\n",max_log_lik[0],log_lik_table[i],rel_prop_2_maxLL[i]);
+					fprintf(streamOutputFile,";%s",taxonsID[i]);
+				}
+			}
+			fprintf(streamOutputFile,"\n"); 
+			
+			
+			// free the log_lik_table
+			GDL_FREE(log_lik_table);
+			// free the relative proporiton to the max LL table
+			//GDL_FREE(rel_prop_2_maxLL);
+			
+		}
+		
+		// free tokens
+		for(i = 0; i < ntok; i++){
+			gdl_string_free(toks[i]);
+			toks[i] = 0; // do not hurt ...
+		}
+		GDL_FREE(toks);
+		// NB : could have benn done with :
+		//GDL_MATRIX_FREE(toks, ntok);
+
+
+
+		// free line
+		gdl_string_free (line);
+		line=0;
+	}
+	
+	// free taxonsID
+	
+	for(i = 0; i < ntaxons; i++){
+		//printf("\t-taxon no %d = %s\n", i, taxonsID[i]);
+		gdl_string_free(taxonsID[i]);
+		
+	}
+	GDL_FREE(taxonsID);
+	
+	gdl_fileclose(INPUT, stream);
+	gdl_fileclose(OUTPUT, streamOutputFile);
+
+		
+	}
+	exit (0);
+}
+

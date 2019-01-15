@@ -1,0 +1,409 @@
+/*
+ *  header.c
+ *
+ *  $Author: mahep $, $Date: 2012/10/02 17:25:37 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <time.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_io.h>
+#include <gdl/gdl_igdb_genome.h>
+
+#include "mixgenomix.h"
+
+#include "kmer.h"
+#include <taxo/taxo.h>
+#include <utils/gzutil.h>
+#include <ext/kseq/kseq.h>
+KSEQ_INIT(gzFile, gzread);
+
+#include "header.c"
+
+static gdl_string * PROGRAM = "mgx-kmernbpredict";
+
+static int help_flag    = 0;
+static int verbose_flag = 0;
+static int debug_flag = 0;
+static int prior_flag = 1;
+
+static gdl_string * INPUT = NULL;
+static gdl_string * OUTPUT = NULL;
+static gdl_string * OUTPUT_PROB = NULL;
+static gdl_string * KMERDB  = NULL;
+static gdl_string * TAXO  = NULL;
+static double EPS = 0.0;
+
+static struct option long_options[] =
+{
+		/* These options set a flag. */
+		{"help", no_argument,          &help_flag, 1},
+		{"verbose", no_argument,       &verbose_flag, 1},
+		{"debug", no_argument,         &debug_flag, 1},
+		{"brief",   no_argument,       &verbose_flag, 0},
+		{"noprior",   no_argument,       &prior_flag, 0},
+		/* These options don't set a flag.
+         We distinguish them by their indices. */
+		{"input",   required_argument, 0, 'i'},
+		{"output",   required_argument, 0, 'o'},
+		{"output_prob",   required_argument, 0, 'p'},
+		{"kmerdb",   required_argument, 0, 'd'},
+		{"taxo",   required_argument, 0, 't'},
+		{"eps",   required_argument, 0, 'e'},
+		{0, 0, 0, 0}
+};
+
+static int
+parse_argument (int argc, char *argv[])
+{
+	int c;
+
+	while (1)
+	{
+
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+
+		c = getopt_long (argc, argv, "i:o:p:d:t:e:",
+				long_options, &option_index);
+
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+
+		switch (c)
+		{
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf ("option %s", long_options[option_index].name);
+			if (optarg)
+				printf (" with arg %s", optarg);
+			printf ("\n");
+			break;
+		case 'i':
+			INPUT = gdl_string_clone (optarg);
+			break;
+		case 'o':
+			OUTPUT = gdl_string_clone (optarg);
+			break;
+		case 'p':
+			OUTPUT_PROB = gdl_string_clone (optarg);
+			break;
+		case 'd':
+			KMERDB = gdl_string_clone (optarg);
+			break;
+		case 't':
+			TAXO = gdl_string_clone (optarg);
+			break;
+		case 'e':
+			EPS = atof (optarg);
+			break;
+		case '?':
+			GDL_ERROR_VAL ("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL ("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+static int
+check_argument (void)
+{
+	if (INPUT == 0)
+	{
+		GDL_ERROR_VAL ("No input file provided",
+				GDL_FAILURE,
+				1);
+	}
+	if (KMERDB == 0)
+	{
+		GDL_ERROR_VAL ("No kmerdb provided",
+				GDL_FAILURE,
+				1);
+	}
+	if (OUTPUT == 0)
+	{
+		GDL_ERROR_VAL ("No output file provided",
+				GDL_FAILURE,
+				1);
+	}
+	if (EPS < 0){
+		GDL_ERROR_VAL ("Epsilon cannot be negative !",
+				GDL_FAILURE,
+				1);
+	}
+	if (EPS > 0 && TAXO == 0)
+	{
+		GDL_ERROR_VAL ("No taxonomy provided for rank-flexible prediction",
+				GDL_FAILURE,
+				1);
+	}
+	return GDL_SUCCESS;
+}
+
+static int
+help (void)
+{
+	print_header (PROGRAM);
+	printf ("\n");
+	printf ("--help\tDisplay a brief help on program usage\n");
+	printf ("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf ("--debug\tMore detailed output message (e.g, for debugging purposes)\n");
+	printf ("\n");
+	printf ("--input or -i\t input file (libsvm format)\n");
+	printf ("--kmerdb or -d\t kmerdb to consider\n");
+	printf ("[--noprior \t flag specifying to not use prior]\n");
+	printf ("[--eps or -e\t epsilon-tolerance for rank-flexible approach]\n");
+	printf ("[--taxo or -t\t taxonomy to consider]\n");
+	printf ("   - NB: mandatory if epsilon > 0\n");
+	printf ("--output or -o\t output file \n");
+	printf ("[--output_prob or -p\t output file containing probabilities]\n");
+
+}
+
+
+
+int
+main (int argc, char *argv[])
+{
+
+	int status;
+
+	parse_argument (argc, argv);
+
+	if (help_flag)
+	{
+		exit (help());
+	}
+
+	if(debug_flag)
+	{
+		verbose_flag = 1;
+	}
+
+	status = check_argument ();
+
+
+	if (status == GDL_SUCCESS)
+	{
+
+		FILE * stream, * outstream, * outstream_prob;
+	    	mgx_kmerdb * kmerdb;
+		mgx_taxonomy * taxonomy;
+	    	size_t i, j ,k ,n, cptr;
+		size_t *count;
+		gdl_string *line = 0;
+
+		// read kmer db //
+		// ------------ //
+		stream = gdl_fileopen (KMERDB, "r");
+		kmerdb = mgx_kmerdb_fread(stream);
+  		gdl_fileclose (KMERDB, stream);
+		if(verbose_flag){
+			printf("--> kmerdb successfully read\n");
+			printf("\t- size = %d ; nseq = %d ; nkmer = %d, smoothing = %f\n",  kmerdb->size,  kmerdb->nseq,  kmerdb->nkmer, kmerdb->smoothing);
+		}
+ 		// if specified, read taxonomy //
+		// --------------------------- //
+    		if(TAXO){
+    		    stream   = gdl_fileopen (TAXO, "r");
+    		    taxonomy = mgx_taxonomy_fread (stream);
+    		    gdl_fileclose (TAXO, stream);
+        		if(verbose_flag){
+        			printf("\n--> taxonomy successfully read\n");
+    				printf("\t- number of taxons = %d\n", taxonomy->ntaxon);
+    				printf("\t- root node = %s\n", taxonomy->root->names[0]);
+        		}
+    		}
+
+		// initialize smoothing values //
+		// --------------------------- //
+		double *log_smooth;
+		log_smooth = GDL_CALLOC(double, kmerdb->size);
+		if(kmerdb->smoothing > 0){
+			for(k = 0; k < kmerdb->size; k++){			
+				log_smooth[k] = log(kmerdb->smoothing /( (double)kmerdb->profiles[k]->totCounts+(double)kmerdb->nkmer*kmerdb->smoothing) );
+			}
+		}
+		
+		// open output file(s) //
+		// --------------------//
+	      	outstream = gdl_fileopen (OUTPUT, "w");
+		if(EPS > 0){
+			printf("*** RANK-FLEXIBLE APPROACH NOT IMPLEMENTED YET : PREDICTING TOP-SCORING TAXON ONLY !! ***\n");
+		}
+		if(OUTPUT_PROB){
+			outstream_prob = gdl_fileopen (OUTPUT_PROB, "w");
+ 			fprintf(outstream_prob, "%d", kmerdb->profile_ids[0]);
+			for(i = 1; i < kmerdb->size; i++){
+				fprintf(outstream_prob,";%d", kmerdb->profile_ids[i]);
+			}
+			fprintf(outstream_prob,"\n");
+		}
+
+
+		// build profile x count matrix //
+		//------------------------------//
+		if(verbose_flag){
+			printf("--> building profile x log-probs matrix\n");		
+		}
+		double **P;
+		P = mgx_kmerdb_get_count_matrix(kmerdb, 1);
+		if(verbose_flag){
+			printf("\t...done.\n");
+		}
+
+		// process input file //
+		// -------------------//
+		stream = gdl_fileopen (INPUT, "r");
+		size_t ntok, ntok2;
+    		gdl_string ** toks, ** toks2;
+		time_t start, end;	
+		double diff;
+		double *log_probs;
+		double p;
+		size_t ind_max;
+		double prob_max;
+		cptr = 0;
+		time(&start);	
+		while(gdl_getline (&line, &n, stream)!=-1)
+   		{
+			//printf("*** processing line %d ***\n", cptr);
+			// log message //
+			// ----------- // 
+			if(cptr > 0 & cptr % 1000 == 0){
+				if(verbose_flag){
+					time(&end);
+					diff = difftime (end,start);
+					printf("\t- processing sequence no %d\n", cptr);
+					printf("\t\t--> last loop took %.2lf seconds\n", diff);
+					time(&start);
+                                }
+                        }
+			// split line //
+			//------------//
+			ntok = 0;
+			toks = gdl_string_split(line, " ", &ntok);
+			// initialize vector of probabilities
+			log_probs = GDL_CALLOC(double, kmerdb->size);
+			if(prior_flag){
+				for(k = 0; k < kmerdb->size; k++){			
+					log_probs[k] = log(kmerdb->profile_probs[k]);
+				}				
+			}
+			// process each field //
+			// ------------------ //
+			double feat_val = 0;
+			size_t feat_ind;
+			for(i = 0; i < ntok ; i++){
+				// split into index / value
+				ntok2 = 0;
+				toks2 = gdl_string_split(toks[i], ":", &ntok2);
+				if(ntok2 != 2){
+					GDL_ERROR_VAL ("feature field not made of 2 entries", GDL_FAILURE,1);
+				}
+				// extract feature index : warning value in the txt file & hassh tables start at 1. 
+				feat_ind = atoi(toks2[0]) - 1;
+				// use count or presence flag depending on model
+				if(kmerdb->model == 0){
+					feat_val = atof(toks2[1]);
+				}else{
+					feat_val = 1;
+				}
+				// get profile probability
+				if(feat_ind >= kmerdb->nkmer){
+					// e.g., for NNNN sequences, we have included an extra "virtual" feature
+					if(verbose_flag){
+						printf("*** WARNING : found un unknow feature in sequence %d (ind = %d while size of kmer db = %d)\n", cptr+1, feat_ind, kmerdb->nkmer);
+					}
+				}else{
+					for(k = 0; k < kmerdb->size; k++){
+						p = P[k][feat_ind];
+						if(p == 0){
+							log_probs[k] += feat_val*log_smooth[k];						
+						}else{
+							log_probs[k] += feat_val*p;
+						}
+					}
+				}
+				// free tokens
+				GDL_MATRIX_FREE(toks2, ntok2);
+			}
+
+			// extract top prediction //
+			// ---------------------- //
+			ind_max = 0;
+			prob_max = log_probs[0];
+			for(i = 1; i < kmerdb->size; i++){
+				if(log_probs[i] > prob_max){
+					ind_max = i;
+					prob_max = log_probs[i];
+				}
+			}
+			// write prediction in output file
+			fprintf(outstream, "%d\n", kmerdb->profile_ids[ind_max]);
+
+			// if necessary, write probs in output file //
+			// ----------------------------------------//
+			if(OUTPUT_PROB){
+				fprintf(outstream_prob, "%.3f", log_probs[0]);
+				for(i = 1; i < kmerdb->size; i++){
+					fprintf(outstream_prob, ";%.3f", log_probs[i]);
+				}
+				fprintf(outstream_prob, "\n");
+			}
+
+			// free memory //
+			// ----------- //
+				// tokens
+			GDL_MATRIX_FREE(toks, ntok);
+				// free line
+			gdl_string_free (line);
+			line=0;
+				// log probabilities
+			GDL_FREE(log_probs);
+
+			// increment counter //
+			// ----------------- //
+			cptr++;
+		}
+		
+		
+		// close input/output files //
+		// ------------------------ //
+		gdl_fileclose (INPUT, stream);
+		gdl_fileclose (OUTPUT, outstream);
+		if(OUTPUT_PROB){
+			gdl_fileclose (OUTPUT_PROB, outstream_prob);
+		}
+		// free memory //
+		// ----------- //
+		mgx_kmerdb_free(kmerdb);
+		if(TAXO){
+			mgx_taxonomy_free(taxonomy);
+		}
+		// profile x count matrix
+		GDL_MATRIX_FREE(P, kmerdb->size);			
+	
+		
+	}
+
+	exit (0);
+}

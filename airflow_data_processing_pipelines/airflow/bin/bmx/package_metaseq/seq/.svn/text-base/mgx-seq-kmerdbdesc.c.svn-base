@@ -1,0 +1,237 @@
+/*
+ *  header.c
+ *
+ *  $Author: mahep $, $Date: 2012/10/02 17:25:37 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <time.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+
+#include "mixgenomix.h"
+
+#include "kmer.h"
+#include <taxo/taxo.h>
+#include <utils/gzutil.h>
+#include <ext/kseq/kseq.h>
+KSEQ_INIT(gzFile, gzread);
+
+#include "header.c"
+
+static gdl_string * PROGRAM = "mgx-kmernbpredict";
+
+static int help_flag    = 0;
+static int verbose_flag = 0;
+static int debug_flag = 0;
+
+static gdl_string * KMERDB  = NULL;
+static gdl_string * PROBS  = NULL;
+static gdl_string * FEATS  = NULL;
+
+static struct option long_options[] =
+{
+		/* These options set a flag. */
+		{"help", no_argument,          &help_flag, 1},
+		{"verbose", no_argument,       &verbose_flag, 1},
+		{"debug", no_argument,         &debug_flag, 1},
+		{"brief",   no_argument,       &verbose_flag, 0},
+		/* These options don't set a flag.
+         We distinguish them by their indices. */
+		{"kmerdb",   required_argument, 0, 'd'},
+		{"probs",   required_argument, 0, 'p'},
+		{"feats",   required_argument, 0, 'f'},
+		{0, 0, 0, 0}
+};
+
+static int
+parse_argument (int argc, char *argv[])
+{
+	int c;
+
+	while (1)
+	{
+
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+
+		c = getopt_long (argc, argv, "d:p:f:",
+				long_options, &option_index);
+
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+
+		switch (c)
+		{
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf ("option %s", long_options[option_index].name);
+			if (optarg)
+				printf (" with arg %s", optarg);
+			printf ("\n");
+			break;
+
+		case 'd':
+			KMERDB = gdl_string_clone (optarg);
+			break;
+		case 'p':
+			PROBS = gdl_string_clone (optarg);
+			break;
+		case 'f':
+			FEATS = gdl_string_clone (optarg);
+			break;
+		case '?':
+			GDL_ERROR_VAL ("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL ("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+static int
+check_argument (void)
+{
+	if (KMERDB == 0)
+	{
+		GDL_ERROR_VAL ("No kmerdb provided",
+				GDL_FAILURE,
+				1);
+	}
+	return GDL_SUCCESS;
+}
+
+static int
+help (void)
+{
+	print_header (PROGRAM);
+	printf ("\n");
+	printf ("--help\tDisplay a brief help on program usage\n");
+	printf ("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf ("--debug\tMore detailed output message (e.g, for debugging purposes)\n");
+	printf ("\n");
+	printf ("--kmerdb or -d\t kmerdb to consider\n");
+	printf ("[--probs or -p\t the [profile x kmer] probability matrix] \n");
+	printf ("[--feats or -f\t profile features] \n");
+}
+
+
+
+
+int
+main (int argc, char *argv[])
+{
+
+	int status;
+
+	parse_argument (argc, argv);
+
+	if (help_flag)
+	{
+		exit (help());
+	}
+
+	if(debug_flag)
+	{
+		verbose_flag = 1;
+	}
+
+	status = check_argument ();
+
+
+	if (status == GDL_SUCCESS)
+	{
+
+		FILE * stream, * outstream, * outstream_prob;
+	    	mgx_kmerdb * kmerdb;
+	    	size_t i, j, k;
+		char buf[50];
+		double log_smooth;
+		double *p;
+
+		// read kmer db //
+		// ------------ //
+		stream = gdl_fileopen (KMERDB, "r");
+		kmerdb = mgx_kmerdb_fread(stream);
+  		gdl_fileclose (KMERDB, stream);
+		if(verbose_flag){
+			printf("--> kmerdb successfully read\n");
+			printf("\t- size = %d ; nseq = %d ; nkmer = %d, smoothing = %f\n",  kmerdb->size,  kmerdb->nseq,  kmerdb->nkmer, kmerdb->smoothing);
+		}
+
+		// write in output file //
+		//---------------------//
+		if(PROBS){
+			if(verbose_flag){
+				printf("*** writing probability matrix ***\n");
+			}
+			// compute matrix
+			double **P;
+			P = mgx_kmerdb_get_count_matrix(kmerdb, 1);
+			// open output file
+		      	outstream = gdl_fileopen (PROBS, "w");
+			// write header
+			fprintf(outstream, "profile_id");
+			for(i = 0; i < kmerdb->nkmer; i++){
+				fprintf(outstream, ";feat_%d", i+1);
+			}
+			fprintf(outstream, "\n");
+			// fill matrix
+			for(i = 0; i < kmerdb->size; i++){
+				fprintf(outstream,"%d", kmerdb->profile_ids[i]);
+				for(j = 0; j < kmerdb->nkmer; j++){
+					fprintf(outstream, ";%.5f", P[i][j]);
+				}
+				fprintf(outstream, "\n");
+			}
+			// close file
+			gdl_fileclose (PROBS, outstream);
+			// free memory
+			GDL_MATRIX_FREE(P, kmerdb->size);
+		}
+
+		// write to output file //
+		// --------------------//
+		if(FEATS){
+			if(verbose_flag){
+				printf("*** writing profile features ***\n");
+			}
+			// open output file
+		      	outstream = gdl_fileopen (FEATS, "w");
+			// write header
+			fprintf(outstream, "profile_id;n.seq;n.kmer;tot.count;prior.prob;log.smoothing\n");
+			// extract features
+			for(k = 0; k < kmerdb->size; k++){
+				// compute smoothing term
+				if(kmerdb->smoothing > 0){
+					log_smooth = log(kmerdb->smoothing /( (double)kmerdb->profiles[k]->totCounts+(double)kmerdb->nkmer*kmerdb->smoothing) );
+				}else{
+					log_smooth = 0;
+				}
+				// write to output file	
+				fprintf(outstream, "%d;%d;%d;%d;%.5f;%.5f\n", kmerdb->profile_ids[k], kmerdb->profiles[k]->nseq, kmerdb->profiles[k]->nkmer, kmerdb->profiles[k]->totCounts, kmerdb->profile_probs[k], log_smooth);
+			}
+			// close file
+			gdl_fileclose (PROBS, outstream);		
+
+		}
+	}
+
+	exit (0);
+}

@@ -1,0 +1,237 @@
+/*
+ *  mgx-fastq2fasta.c
+ *
+ *  $Author: lepriolc $, $Date: 2012/02/07 17:19:34 $, $Version$
+ *
+ *  MixgenomiX : a C package for metagenomics
+ *
+ *  Copyright (C) 2011  DKL Team, bioMérieux, France.
+ *
+ */
+
+ /**
+ * \file mgx-fastq2fasta.c
+ * \brief This program converts a fastq file into a fasta file
+ * \author Jean-Baptiste Veyrieras
+ * \version 1.0
+ * \date November 1 2011
+ */
+
+#include <getopt.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <math.h>
+
+#include <gdl/gdl_common.h>
+#include <gdl/gdl_version.h>
+#include <gdl/gdl_errno.h>
+#include <gdl/gdl_runtime.h>
+#include <gdl/gdl_list.h>
+#include <gdl/gdl_hash.h>
+
+// mixgenomix header
+#include <utils/gzutil.h>
+#include <ext/kseq/kseq.h>
+#include "mixgenomix.h"
+
+KSEQ_INIT(gzFile, gzread);
+
+#include "header.c"
+#include "util.c"
+
+static gdl_string * PROGRAM = "mgx-fastq2fasta";
+
+static int help_flag = 0;
+static int verbose_flag = 0;
+
+static gdl_string * INPUT     = NULL;  // name of the input Fastq file
+//static gdl_string* OUTPUT     = NULL;  // basename of the output Fasta and QUAL files
+static char* OUTPUT     = NULL;  // basename of the output Fasta and QUAL files
+static char quality_type = 0; // quality type in output: 0 for ASCII characters, 1 for integers
+
+static struct option long_options[] = {
+/* These options set a flag. */
+{ "help", no_argument, &help_flag, 1 },
+{ "verbose", no_argument, &verbose_flag, 1 },
+{ "brief", no_argument, &verbose_flag, 2 },
+/* These options don't set a flag.
+ We distinguish them by their indices. */
+{ "input", required_argument, 0, 'i' },
+{ "output", required_argument, 0, 'q' },
+{ "qual_type", required_argument, 0, 't' },
+{ 0, 0, 0, 0 } };
+
+static int parse_argument(int argc, char *argv[]) {
+	int c;
+	while (1) {
+		/* getopt_long stores the option index here. */
+		int option_index = 0;
+		c = getopt_long(argc, argv, "i:q:t:", long_options, &option_index);
+		/* Detect the end of the options. */
+		if (c == -1)
+			break;
+		switch (c) {
+		case 0:
+			/* If this option set a flag, do nothing else now. */
+			if (long_options[option_index].flag != 0)
+				break;
+			printf("option %s", long_options[option_index].name);
+			if (optarg)
+				printf(" with arg %s", optarg);
+			printf("\n");
+			break;
+		case 'i':
+			INPUT = gdl_string_clone(optarg);
+			break;
+		case 'q':
+			//OUTPUT = gdl_string_clone(optarg);
+			OUTPUT = optarg;
+			break;
+		case 't':
+			quality_type = atoi(gdl_string_clone(optarg));
+			break;
+		case '?':
+			GDL_ERROR_VAL("Unknown arguments", GDL_EINVAL, -1);
+		default:
+			GDL_ERROR_VAL("Bad arguments", GDL_EINVAL, -1);
+		}
+	}
+}
+
+/**
+ * \fn static int check_argument(void)
+ * \brief This function checks the main function arguments.
+ * \return a success indicator
+ */
+static int check_argument(void) {
+	if (INPUT == 0) {
+		GDL_ERROR_VAL("No input fastq file provided", GDL_FAILURE, 1);
+	}
+	return GDL_SUCCESS;
+}
+
+/**
+ * \fn static int help(void)
+ * \brief This function prints the help
+ */
+static int help(void) {
+	print_header(PROGRAM);
+	printf("\n");
+	printf("--help\tDisplay a brief help on program usage\n");
+	printf("--verbose\tOutput message on standard output to see what the program is doing\n");
+	printf("\n");
+	printf("--input or -i\tAn input fastq file\n");
+	printf("--output or -o\tBasename for output fasta and qual files\n");
+	printf("--qual_type or -t\tQuality type in output: 0 for ASCII characters, 1 for integers\n");
+}
+
+void
+print_seq (const char * seq, FILE* file)
+{
+   size_t i, n = strlen(seq);
+   FILE* out;
+
+   if (file == NULL) {
+	   out = stdout;
+   } else {
+	   out = file;
+   }
+
+   for(i = 0; i < n; i++)
+   {
+      if (i && i % 80 == 0)
+      {
+         fprintf (out,"\n");
+      }
+      fputc (toupper(seq[i]), out);
+   }
+}
+
+void
+print_qual_int (const char * seq, FILE* file)
+{
+   size_t i, n = strlen(seq);
+
+   for(i = 0; i < n; i++)
+   {
+      if (i && i % 80 == 0)
+      {
+         fprintf (file,"\n");
+      }
+      char ascii_char = seq[i];
+      // PHRED quality is ASCII character integer value - 33
+      int phred_qual = (int)ascii_char;
+      fprintf (file,"%d ",phred_qual-33);
+   }
+}
+
+int main(int argc, char *argv[])
+{
+	int status;
+	parse_argument(argc, argv);
+	if (help_flag) {
+		exit(help());
+	}
+
+	status = check_argument();
+
+	if (status == GDL_SUCCESS)
+        {
+	   gzFile fp;
+	   kseq_t *seq;
+
+	   fp = gzopen(INPUT, "r");
+	   seq = kseq_init(fp);
+
+	   if (OUTPUT != NULL) {
+		   // Create output files
+		   size_t length_output_basename = strlen(OUTPUT);
+		   printf("basename: %s, length basename: %d\n",OUTPUT,length_output_basename);
+		   char* fasta_output_path = malloc((length_output_basename+5)*sizeof(char));
+		   //gdl_string* fasta_output_path = gdl_string_alloc(length_output_basename+5);
+		   sprintf(fasta_output_path,"%s%s",OUTPUT,".fna");
+		   //gdl_string_sprintf(fasta_output_path,"%s%s",OUTPUT,".fna");
+		   FILE* fasta_output = NULL;
+		   fasta_output = fopen(fasta_output_path,"w");
+		   char* qual_output_path = malloc((length_output_basename+6)*sizeof(char));
+		   //gdl_string* qual_output_path = gdl_string_alloc(length_output_basename+6);
+		   sprintf(qual_output_path,"%s%s",OUTPUT,".qual");
+		   //gdl_string_sprintf(qual_output_path,"%s%s",OUTPUT,".qual");
+		   FILE* qual_output = NULL;
+		   qual_output = fopen(qual_output_path,"w");
+
+		   while (kseq_read(seq) >= 0) {
+			   // print Fasta
+			   fprintf(fasta_output,">%s\n",seq->name.s);
+			   print_seq(seq->seq.s,fasta_output);
+			   fprintf(fasta_output,"\n");
+			   // print QUAL
+			   fprintf(qual_output,">%s\n",seq->name.s);
+			   if (quality_type == 0) {
+				   print_seq(seq->qual.s,qual_output);
+			   } else {
+				   if (quality_type == 1) {
+					   print_qual_int(seq->qual.s,qual_output);
+				   }
+			   }
+			   fprintf(qual_output,"\n");
+   		   }
+		   kseq_destroy(seq);
+		   fclose(fasta_output);
+		   fclose(qual_output);
+	   } else {
+		   while (kseq_read(seq) >= 0) {
+              printf(">%s\n", seq->name.s);
+              print_seq (seq->seq.s,NULL);
+		   	  printf("\n");
+		   }
+		   kseq_destroy(seq);
+	   }
+	   gzclose(fp);
+      }
+      exit(0);
+}

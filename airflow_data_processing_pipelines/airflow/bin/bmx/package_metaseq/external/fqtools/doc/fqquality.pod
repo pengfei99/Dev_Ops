@@ -1,0 +1,109 @@
+=pod
+
+=head1 NAME
+
+=over 4
+
+=item B<fqquality> - FastQ sequence quality filter
+
+=back
+
+=head1 SYNOPSIS
+
+=over 4
+
+=item B<fqquality> [options] -i F<file> [F<file>]
+
+=back
+
+=head1 OPTIONS
+
+Following command line options are allowed:
+
+=over 4
+
+=item -b F<value>
+
+Overall bad quality maximum percent. Default to 100.0%.
+
+=item -d
+
+Decrease low quality values to minimum.
+
+=item -h
+
+Usage display.
+
+=item -l F<value>
+
+Minimum sequence length F<value>. Default to 0.
+
+=item -m
+
+Mask low quality bases.
+
+=item -p F<string>
+
+Prepend output file names with given F<string> prefix.
+
+=item -q F<value>
+
+Use F<value> for quality cutoff. Default to 0.
+
+=item -t
+
+Trim low quality bases.
+
+=back
+
+=head1 DESCRIPTION
+
+B<fqquality> is a small tool that allows filtering fastq sequences on
+quality criteria. For now only illumina quality model is supported.
+
+The following methods can be applied, in sequence :
+
+=over 4
+
+=item - F<Discard sequences with bad overall quality percent> (B<-b>)
+
+Sequence where the percentage of bases below the quality cutoff is
+lower than the provided value will be discarded.
+
+=item - F<Mask low quality bases> (B<-m>)
+
+Bases where quality value is lower than provided cutoff, will be
+masked using the `N' character.
+
+=item - F<Decrease low quality values to minimum> (B<-d>)
+
+Bases where quality value is lower than provided cutoff, will have
+their value lowered to the minimum supported one (letter B).
+
+=item - F<Trim bases with low quality value on both ends> (B<-t>)
+
+Bases where quality value is lower than provided cutoff, will be
+trimmed from both sequence ends.
+
+=item - F<Discard sequences smaller than a specified length> (B<-l>)
+
+Sequences where length is smaller than the provided value will be
+discarded.
+
+=back
+
+The results will be stored in the following files :
+
+- F<xxxxx_1.fq> will hold sequences from input file 1 (single-read and
+paired-ends)
+
+- F<xxxxx_2.fq> will hold sequences from input file 2 (paired-ends).
+
+- F<xxxxx_s.fq> will hold singlet sequences from both input files 1
+and 2 (paired-ends).
+
+=head1 AUTHOR
+
+Nicolas Joly (njoly@pasteur.fr), Institut Pasteur.
+
+=cut
