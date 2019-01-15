@@ -1,0 +1,14 @@
+---
+# This playbook installs a owncloud server on a centos based Os.
+# With the configure role, it will require a external DB and fs(gpfs of nfs)
+
+- name: Install owncloud on centos7.
+  user: bioaster
+  hosts: test_owncloud
+  become: yes
+  become_user: root
+  become_method: sudo
+
+  roles:
+ #    - Install-ownCloud
+     - config-ownCloud

@@ -1,0 +1,66 @@
+---
+# Install owncloud package and dependencies
+- name: Install owncloud package and dependencies
+  yum: name={{ item }} state=latest
+  with_items: 
+  - httpd
+  - php
+  - mariadb-server
+  - mariadb
+  - php-mysql
+  - sqlite
+  - php-dom
+  - php-mbstring
+  - php-gd
+  - php-pdo
+  - php-process
+  - mod_ssl
+  - openssl
+  - wget
+  - bzip2
+  register: owncloud_package
+
+#Autorise owncloud to access directory, if selinux is enabled (by default yes)
+- name: Add selinux access rules for owncloud
+  shell: setsebool -P httpd_unified on
+  when: owncloud_package.changed
+  
+#Add firewall rules for public access
+- name: Add firewall rules for public access
+  shell: "{{ item }}"
+  with_items: 
+  - firewall-cmd --permanent --zone=public --add-service=http  
+  - firewall-cmd --permanent --zone=public --add-service=https
+  - firewall-cmd --reload
+  register: firewall_rules
+ 
+#Add httpd as startup service
+- name: Add httpd as startup service
+  shell: systemctl enable httpd.service 
+  when: firewall_rules.changed
+  notify: restart httpd
+  
+#Get owncloud source
+- name: Get owncloud source
+  get_url: 
+    url: "{{ owncloud_source_url }}/{{ owncloud_source_name }}"
+    dest: "/tmp/{{ owncloud_source_name }}"
+    mode: u=rw,g=r,o=r
+  
+#Put the owncloud source under /var/www/html and Change the owncloud folder owner to apache
+- name: Put the owncloud source under /var/www/html
+  unarchive: >
+    src="/tmp/{{ owncloud_source_name }}"
+    dest=/var/www/html/owncloud/
+    remote_src=yes
+    owner=apache
+    group=apache
+  
+    
+#Add owncloud apache config to httpd/conf.d/
+- name: Add owncloud apache config
+  template: >
+    src=roles/Install-ownCloud/templates/owncloud.conf.j2 
+    mode=0644 owner=root group=root
+    dest=/etc/httpd/conf.d/owncloud.conf
+  notify: restart httpd

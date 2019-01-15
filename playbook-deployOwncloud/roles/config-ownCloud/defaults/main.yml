@@ -1,0 +1,24 @@
+---
+
+#The sec configuration for owncloud, only the http request to the following url will be answered by oc 
+host_url: ccbioappl03.in2p3.fr
+service_url: owncloud.bioaster.org
+
+#The user data will be stored at data_dir location 
+data_dir: /mnt/gpfs/UsersData
+
+#Configuration of owncloud db connector
+db_type: mysql
+db_version: 8.2.4.2
+
+#The web interface theme
+oc_theme: bioaster
+
+#The db information
+db_url: ccmysql.in2p3.fr
+db_name: owncloud
+db_user: owncloud
+db_pwd: changeMe
+
+#Plugin depencies
+libOff_path: /usr/bin/libreoffice

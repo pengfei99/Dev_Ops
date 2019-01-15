@@ -1,0 +1,17 @@
+---
+
+#Put the default config.php in backup
+- name: copy the default config.php in backup
+  copy: >
+    src=/var/www/html/owncloud/config/config.php
+    dest=/var/www/html/owncloud/config/config.php.bkp
+    remote_src=True
+  register: backup_done
+
+#Configure the owncloud to connect to the external DB, and Fs
+- name: Set the customized config
+  template: > 
+    src=roles/config-ownCloud/templates/config.php.j2 
+    mode=0644 owner=root group=root
+    dest=/var/www/html/owncloud/config/config.php
+  when: backup_done.changed

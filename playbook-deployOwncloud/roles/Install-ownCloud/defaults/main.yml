@@ -1,0 +1,5 @@
+---
+
+owncloud_source_url : "https://download.owncloud.org/community"
+#owncloud_source_name: "owncloud-9.1.1.tar.bz2"
+owncloud_source_name: "owncloud-8.2.5.tar.bz2"
