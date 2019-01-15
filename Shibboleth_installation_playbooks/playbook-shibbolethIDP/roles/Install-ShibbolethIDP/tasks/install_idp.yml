@@ -1,0 +1,47 @@
+---
+
+# FIXME: Next few steps have commented out lines that can be used to install
+# IDP version 3 instead of 2… but IDP won't run! Work in progress…
+
+# TODO: Do not remove because it can break the server!!
+#       Just make sur that IdP can be reinstalled on top of the previous one
+#- name: Remove any previous installation
+#  file:
+#    name: "{{ item }}"
+#    state: absent
+#  with_items:
+#    - "{{ shibboleth_install_dir }}"
+#    - /opt/jetty/bioaster_base/webapps/idp.war
+
+- name: Download IdP archive
+  get_url:
+#    url: http://shibboleth.net/downloads/identity-provider/3.1.2/shibboleth-identity-provider-3.1.2.tar.gz
+#    dest: /opt/shibboleth-identity-provider-3.1.2.tar.gz
+#    sha256sum: 2519918257f77a80816de3bdb56b940a9f59325b6aa550aad53800291c1dec04
+    url: http://shibboleth.net/downloads/identity-provider/2.4.4/shibboleth-identityprovider-2.4.4-bin.tar.gz
+    dest: /opt/shibboleth-identityprovider-2.4.4-bin.tar.gz
+    sha256sum: aebdc4ae511710d6e89c1c2c0dd26d63b9d627d793943d622c7234910eeebbca
+    force: no
+
+- name: Extract archive
+  unarchive:
+#    src: /tmp/shibboleth-identity-provider-3.1.2.tar.gz
+    src: /opt/shibboleth-identityprovider-2.4.4-bin.tar.gz
+    dest: /opt/
+    copy: no
+
+- name: Copy property file
+  template:
+#    src: build_properties.txt.j2
+#    dest: /opt/shibboleth-identity-provider-3.1.2/build_properties.txt
+    src: install.properties.j2
+    dest: /opt/shibboleth-identityprovider-2.4.4/src/installer/resources/install.properties
+
+# Echo is required to get rid of mandatory questions
+- name: Install IdP
+#  shell: echo "" | JAVA_HOME=/usr/java/jdk1.8.0_51/ ./bin/install.sh -propertyfile build_properties.txt
+  shell: echo "" | JAVA_HOME=/usr/java/jdk1.8.0_51/ ./install.sh
+  args:
+#    chdir: /opt/shibboleth-identity-provider-3.1.2
+    chdir: /opt/shibboleth-identityprovider-2.4.4/
+

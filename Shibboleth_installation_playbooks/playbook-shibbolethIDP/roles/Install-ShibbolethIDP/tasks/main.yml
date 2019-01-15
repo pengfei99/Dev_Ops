@@ -1,0 +1,188 @@
+---
+
+- name: Disabling SELinux
+  shell: setenforce 0
+
+- name: Disabling SELinux in config file
+  selinux: state=disabled
+
+- name: Copy Oracle JDK
+  copy:
+    src: /home/tlecarrour/Documents/ansible/roles/shibboleth/files/{{ jdk_rpm_file }}
+    dest: /opt/{{ jdk_rpm_file }}
+    force: no
+  tags: java
+
+- name: Install Oracle JDK
+  shell: rpm -i /opt/{{ jdk_rpm_file }}
+  register: yum_result
+  failed_when: yum_result.rc == 1 and 'already installed' not in yum_result.stderr
+  changed_when: false
+  tags: java
+
+- name: Set environment variables
+  template:
+    src: java.sh.j2
+    dest: /etc/profile.d/java.sh
+    mode: 0755
+  tags: java
+
+
+- name: Create Jetty group
+  group:
+    name: jetty
+  tags: jetty
+
+- name: Add Jetty user
+  user:
+    name: jetty
+    group: jetty
+  tags: jetty
+
+- debug:
+    msg: "Installation of Jetty is deactivated in roles/shibboleth/tasks/main.yml"
+
+- include: install_jetty.yml
+  when: false
+  tags: jetty
+
+- name: Set owner for jetty folder
+  file:
+    name: /opt/jetty-distribution-{{ jetty_version }}
+    owner: jetty
+    group: jetty
+    recurse: yes
+  tags: jetty
+
+- name: Configure Jetty
+  template:
+    src: jetty.j2
+    dest: /etc/default/jetty
+  tags: jetty
+
+- name: Create symlinks
+  file:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    state: link
+  with_items:
+    - { src: "/opt/jetty-distribution-{{ jetty_version }}", dest: "{{ jetty_install_dir }}" }
+    - { src: "/opt/jetty/bin/jetty.sh", dest: "/etc/init.d/jetty" }
+  tags: jetty
+
+# FIXME: why do I have to force the loading of environment variables?!
+- name: Force loading of environment variables
+  lineinfile:
+    dest: /etc/init.d/jetty
+    line: source /etc/profile
+    insertafter: "^NAME="
+    state: present
+
+- name: Creating structure for Jetty base
+  file:
+    name: "{{ jetty_install_dir }}/bioaster_base/{{ item }}"
+    state: directory
+    owner: jetty
+    group: jetty
+  with_items:
+    - /
+    - lib
+    - lib/ext
+    - etc
+    - webapps
+    - resources
+
+- name: Install config files
+  copy:
+    src: "{{ item.name }}"
+    dest: "{{ jetty_install_dir }}/bioaster_base/{{ item.path }}/{{ item.name }}"
+  with_items:
+    - { name: start.ini,        path: / }
+    - { name: keystore,         path: etc }
+    - { name: login.conf,       path: etc }
+    - { name: login.properties, path: etc }
+
+- name: Enable and run Jetty
+  service:
+    name: jetty
+    state: started
+    enabled: yes
+  tags: jetty
+
+- debug:
+    msg: "Installation of IDP is deactivated in roles/shibboleth/tasks/main.yml"
+
+- include: install_idp.yml
+  when: false
+  tags: shibboleth
+
+- name: Set permissions on Shibboleth folder
+  file:
+    name: "{{ shibboleth_install_dir }}"
+    owner: jetty
+    group: jetty
+    recurse: yes
+
+- name: Install config files
+  template:
+    src: "{{ item.name }}.j2"
+    dest: "{{ shibboleth_install_dir }}/{{ item.path }}/{{ item.name }}"
+  with_items:
+    - { name: attribute-filter.xml,   path: conf }
+    - { name: attribute-resolver.xml, path: conf }
+    - { name: handler.xml,            path: conf }
+    - { name: relying-party.xml,      path: conf }
+    - { name: login.config,           path: conf }
+    - { name: idp.crt,                path: credentials }
+    - { name: idp.key,                path: credentials }
+    - { name: idp-metadata.xml,       path: metadata }
+  tags: dev
+
+- name: Install SP certificates
+  template:
+    src: "sp-metadata.crt.j2"
+    dest: "{{ shibboleth_install_dir }}/credentials/{{ item.server_name }}-metadata.crt"
+  with_items: service_providers
+  tags: dev
+
+- name: Install SP metadata
+  template:
+    src: "sp-metadata.xml.j2"
+    dest: "{{ shibboleth_install_dir }}/metadata/{{ item.server_name }}-metadata.xml"
+  with_items: service_providers
+  tags: dev
+
+- name: Install more config files
+  copy:
+    src: "{{ item.name }}"
+    dest: "{{ shibboleth_install_dir }}/{{ item.path }}/{{ item.name }}"
+  with_items:
+    - { name: 'idp.jks', path: 'credentials' }
+  tags: dev
+
+- name: Deploy IdP in Jetty
+  command: cp {{ shibboleth_install_dir }}/war/idp.war {{ jetty_install_dir }}/bioaster_base/webapps/
+  tags: shibboleth
+
+# This step always fails because Shibboleth takes several minutes to start
+- name: Restart Jetty
+  service:
+    name: jetty
+    state: restarted
+  ignore_errors: yes
+  tags: shibboleth
+
+# Jetty runs as user jetty so it cannot listen on privileged ports
+# We redirect 443 to 8443 using iptables
+#- name: Redirect port 443 to 8443
+#  command: iptables -t nat -I PREROUTING -p tcp --dport 443 -j REDIRECT --to-port 8443
+# That's a mess! We disable the firewall for now
+- name: Disable Firewall
+  service:
+    name: firewalld
+    state: stopped
+    enabled: no
+
+- name: Save iptables configuration
+  command: iptables-save
+

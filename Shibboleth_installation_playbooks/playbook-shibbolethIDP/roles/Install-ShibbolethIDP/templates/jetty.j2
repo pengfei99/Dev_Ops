@@ -1,0 +1,7 @@
+JETTY_HOME={{ jetty_install_dir }}
+JETTY_BASE={{ jetty_install_dir }}/bioaster_base/
+JETTY_USER=jetty
+JETTY_PORT=8080
+JETTY_HOST={{ ansible_ssh_host }}
+JETTY_LOGS={{ jetty_install_dir }}/logs/
+JAVA_OPTIONS="-Djava.awt.headless=true -Xmx1000m -XX:+UseConcMarkSweepGC"

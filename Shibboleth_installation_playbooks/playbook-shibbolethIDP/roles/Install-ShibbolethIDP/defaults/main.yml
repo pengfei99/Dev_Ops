@@ -1,0 +1,29 @@
+---
+
+jetty_install_dir: /opt/jetty
+#jetty_version: 9.3.6.v20151106
+jetty_version: 9.3.2.v20150730
+
+java_major: 8
+java_minor: 65
+jdk_rpm_file: jdk-{{ java_major }}u{{ java_minor }}-linux-x64.rpm
+
+shibboleth_install_dir: /opt/shibboleth-idp
+
+entity_id: "https://auth.bioaster.org/idp/shibboleth"
+url: "https://auth.bioaster.org:8443/idp"
+
+ssl_certificate: ""
+ssl_key: ""
+
+domain: bioaster.org
+
+static_attributes: []
+
+service_providers: []
+
+ldap_url: "ldap://srvadmin.bioaster.local:389"
+ldap_base_dn: "OU=UTILISATEURS,dc=bioaster,dc=local"
+ldap_user: "CN=SRVWIKI_Service,OU=Wiki,OU=Application,OU=GroupeSecu,DC=Bioaster,DC=local"
+ldap_password: "O7JTV2PT5376GLOoYLPS"
+

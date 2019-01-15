@@ -19,55 +19,50 @@
         <resolver:AttributeEncoder xsi:type="enc:SAML2StringNameID" nameFormat="urn:oasis:names:tc:SAML:2.0:nameid-format:transient"/>
     </resolver:AttributeDefinition>
     
-<resolver:AttributeDefinition id="uid" xsi:type="PrincipalName" xmlns="urn:mace:shibboleth:2.0:resolver:ad">
-<resolver:AttributeEncoder xsi:type="enc:SAML1String"  name="uid" />
-<resolver:AttributeEncoder xsi:type="enc:SAML2String"  name="uid" />
-</resolver:AttributeDefinition>
-
-
+    {% for attribute in static_attributes %}
+    <resolver:AttributeDefinition xsi:type="ad:Simple" id="{{ attribute.name }}" sourceAttributeID="{{ attribute.name }}">
+        <resolver:Dependency ref="staticAttributes" />
+        <resolver:AttributeEncoder xsi:type="enc:SAML1String" name="{{ attribute.name }}" />
+        <resolver:AttributeEncoder xsi:type="enc:SAML2String" name="{{ attribute.name }}" />
+    </resolver:AttributeDefinition>
+    {% endfor %}
+    
+    <resolver:AttributeDefinition xsi:type="ad:Simple" id="uid" sourceAttributeID="uid">
+        <resolver:Dependency ref="LocalLdap" />
+        <resolver:AttributeEncoder xsi:type="enc:SAML1String" name="uid" />
+        <resolver:AttributeEncoder xsi:type="enc:SAML2String" name="uid" />
+    </resolver:AttributeDefinition>
+    
     <resolver:AttributeDefinition xsi:type="ad:Simple" id="cn" sourceAttributeID="cn">
         <resolver:Dependency ref="LocalLdap" />
         <resolver:AttributeEncoder xsi:type="enc:SAML1String" name="cn" />
         <resolver:AttributeEncoder xsi:type="enc:SAML2String" name="cn" />
     </resolver:AttributeDefinition>
-
+    
     <resolver:AttributeDefinition xsi:type="ad:Simple" id="mail" sourceAttributeID="mail">
         <resolver:Dependency ref="LocalLdap" />
         <resolver:AttributeEncoder xsi:type="enc:SAML1String" name="mail" />
         <resolver:AttributeEncoder xsi:type="enc:SAML2String" name="mail" />
     </resolver:AttributeDefinition>
-        
-<resolver:AttributeDefinition xsi:type="ad:Simple" id="department" sourceAttributeID="department">
-        <resolver:Dependency ref="LocalLdap" />
-        <resolver:AttributeEncoder xsi:type="enc:SAML1String" name="department" />
-        <resolver:AttributeEncoder xsi:type="enc:SAML2String" name="department" />
-    </resolver:AttributeDefinition>
-
-<resolver:AttributeDefinition xsi:type="ad:Simple" id="location" sourceAttributeID="physicalDeliveryOfficeName">
-        <resolver:Dependency ref="LocalLdap" />
-        <resolver:AttributeEncoder xsi:type="enc:SAML1String" name="location" />
-        <resolver:AttributeEncoder xsi:type="enc:SAML2String" name="location" />
-    </resolver:AttributeDefinition>
     
-  <resolver:AttributeDefinition xsi:type="ad:Simple" id="wps" sourceAttributeID="wps">
-        <resolver:Dependency ref="SciformaUserDb" />
-        <resolver:AttributeEncoder xsi:type="enc:SAML1String" name="wps" />
-        <resolver:AttributeEncoder xsi:type="enc:SAML2String" name="wps" />
-    </resolver:AttributeDefinition>
-
     <!-- ========================================== -->
     <!--      Data Connectors                       -->
     <!-- ========================================== -->
     
     <resolver:DataConnector id="staticAttributes" xsi:type="dc:Static">
-            </resolver:DataConnector>
+        {% for attribute in static_attributes %}
+        <dc:Attribute id="{{ attribute.name }}">
+            <dc:Value>{{ attribute.value }}</dc:Value>
+        </dc:Attribute>
+        {% endfor %}
+    </resolver:DataConnector>
     
     <resolver:DataConnector xsi:type="LDAPDirectory" xmlns="urn:mace:shibboleth:2.0:resolver:dc"
                         id="LocalLdap"
-                        ldapURL="ldap://srvadmin.bioaster.local:389"
-                        baseDN="OU=UTILISATEURS,dc=bioaster,dc=local"
-                        principal="service-shibboleth"
-                        principalCredential="ChangeMe"
+                        ldapURL="{{ ldap_url }}"
+                        baseDN="{{ ldap_base_dn }}"
+                        principal="{{ ldap_user }}"
+                        principalCredential="{{ ldap_password }}"
                         useStartTLS="false">
         <FilterTemplate>
             <![CDATA[
@@ -75,40 +70,11 @@
             ]]>
         </FilterTemplate>
         
-        <ReturnAttributes>cn uid mail department title</ReturnAttributes>
+        <ReturnAttributes>cn uid mail</ReturnAttributes>
     </resolver:DataConnector>
-   
-
-  <resolver:DataConnector id="SciformaUserDb" xsi:type="RelationalDatabase" xmlns="urn:mace:shibboleth:2.0:resolver:dc" queryTimeout="PT0.000S">
-        <dc:ApplicationManagedConnection jdbcDriver="org.postgresql.Driver"
-                                         poolAcquireRetryAttempts="1"
-                                         poolAcquireRetryDelay="1"
-                                         poolBreakAfterAcquireFailure="false"
-                                         jdbcURL="jdbc:postgresql://10.69.2.31:5432/sciforma"
-                                         jdbcUserName="shibboleth"
-                                         jdbcPassword="ChangeMe"/>
-
-<dc:QueryTemplate>
-            <![CDATA[
-                SELECT t."AD_ID", string_agg(t.wps,';') AS wps
-                FROM
-                    (SELECT DISTINCT a."AD_ID", CONCAT(b."Name",'::', b."WorkPackageID") AS wps
-                    FROM sciforma."BA_shib_LaborAsgn" a INNER JOIN sciforma."BA_shib_projWPtask" b ON  a."_Task_IID" = b."_Task_IID" AND a."_Project_IID" = b."_Project_IID"
-                    ORDER BY a."AD_ID") t
-                WHERE t."AD_ID"='${requestContext.principalName}'
-                GROUP BY t."AD_ID"
-            ]]>
-        </dc:QueryTemplate>
-
-
-        <dc:Column columnName="wps" attributeID="wps" />
- 
-         </resolver:DataConnector>
-
- 
+    
     <resolver:PrincipalConnector xsi:type="pc:Transient" id="shibTransient" nameIDFormat="urn:mace:shibboleth:1.0:nameIdentifier"/>
     <resolver:PrincipalConnector xsi:type="pc:Transient" id="saml1Unspec" nameIDFormat="urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified"/>
     <resolver:PrincipalConnector xsi:type="pc:Transient" id="saml2Transient" nameIDFormat="urn:oasis:names:tc:SAML:2.0:nameid-format:transient"/>
     
 </resolver:AttributeResolver>
-

@@ -1,0 +1,12 @@
+ShibUserPassAuth {
+    edu.vt.middleware.ldap.jaas.LdapLoginModule required
+        ldapUrl="{{ ldap_url }}"
+        baseDn="{{ ldap_base_dn }}"
+        bindDn="{{ ldap_user }}"
+        bindCredential="{{ ldap_password }}"
+        ssl="false"
+        userFilter="sAMAccountName={0}"
+        subtreeSearch="true"
+    ;
+};
+

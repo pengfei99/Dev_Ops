@@ -1,0 +1,6 @@
+#!/bin/bash
+JAVA=/usr/java/jdk1.{{ java_major }}.0_{{ java_minor }}/bin/java
+JAVA_HOME=/usr/java/jdk1.{{ java_major }}.0_{{ java_minor }}/
+PATH=$JAVA_HOME/bin:$PATH
+export JAVA JAVA_HOME PATH
+export CLASSPATH=.
