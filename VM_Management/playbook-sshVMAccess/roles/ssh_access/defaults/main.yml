@@ -1,19 +1,21 @@
 ---
 
-#User name which you want to create in the server
-user_name : "cdelestre"
+# User name which you want to create in the server
+user_name : "ptest"
 
-#Default user password will be his login
+# Set salt value for password hash
+salt : "GlqOzvEpm"
+
+# Default user password will be his login
 user_password : "{{ user_name }}"
 
-#Sudo rights by default is false, when true, add user to group wheel
-# sudo_right: yes # [yes|no]
+# Sudo rights by default is false, when true, add user to group wheel
 sudo_right : true
 
 sudo_group : "wheel"
 
-#Groups which you want to assign to user
+# Groups which you want to assign to user
 user_groups : []
 
-#User public key path which you want to upload to the server
-user_key_path : "/home/pliu/git/Bioaster_OS_SSH_KEY/Delestre_Clement/id_rsa.pub"
+# User public key path which you want to upload to the server
+user_key_path : "/home/pliu/.ssh/id_rsa.pub"

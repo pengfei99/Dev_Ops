@@ -1,9 +1,12 @@
 ---
+- name: generate user password hash
+  shell: openssl passwd -salt {{ salt }} -1 {{ user_password }}
+  register: gen_pass
 
 - name: Create user account in centos
   user: >
      name={{ user_name }}
-     password={{ user_password }}
+     password={{ gen_pass.stdout }}
   register: user_created
 
 
