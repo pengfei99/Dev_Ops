@@ -1,0 +1,15 @@
+# ignore all logs
+*.log
+
+# ignore all .class
+*.class
+
+# ignore all files under target/
+target/
+
+
+# ignore the IDE files
+.idea/
+
+# ignore .iml
+*.iml
