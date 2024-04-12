@@ -1,0 +1,8 @@
+---
+# defaults file for grant_sudo_privilege
+
+default_password: "{{ username }}123"
+
+user_home: "/home/{{ username }}"
+
+user_shell: "/bin/bash"

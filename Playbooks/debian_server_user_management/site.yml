@@ -1,0 +1,15 @@
+---
+# This playbook adds create a new user account on a centos 7 server.
+# Then add his public key as authorized_key
+- name: Create user and add his public key.
+  user: pliu
+  hosts: all
+  become: yes
+  become_user: root
+  become_method: sudo
+  vars_prompt:
+    - name: username
+      prompt: "Enter Username"
+      private: no
+  roles:
+     - grant_sudo_privilege
