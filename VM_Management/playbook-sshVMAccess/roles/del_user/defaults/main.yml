@@ -3,3 +3,9 @@
 # User name which you want to create in the server
 user_name : "ptest"
 
+default_password: "{{ username }}123"
+
+user_home: "/home/{{ username }}"
+
+user_shell: "/bin/bash"
+

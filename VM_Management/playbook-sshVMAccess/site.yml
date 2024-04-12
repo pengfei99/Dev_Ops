@@ -3,7 +3,7 @@
 # Then add his public key as authorized_key
 - name: Create user and add his public key.
   user: pliu
-  hosts: UDL
+  hosts: all
   become: yes
   become_user: root
   become_method: sudo

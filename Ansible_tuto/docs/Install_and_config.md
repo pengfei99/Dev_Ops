@@ -122,4 +122,6 @@ be executed on our managed nodes`.
 
 ```shell
 ansible-playbook grant_sudo_playbook.yml -u pliu --connection-password-file=/etc/ansible/sudo_pass.txt
+
+ansible-playbook site.yml -u pliu --connection-password-file=/etc/ansible/sudo_pass.txt
 ```
