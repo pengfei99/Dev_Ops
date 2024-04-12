@@ -1,6 +1,6 @@
 # Install and configure ansible
 
-## Step 1  Installing Ansible
+## 1  Installing Ansible
 
 To begin using Ansible as a means of managing your server infrastructure, you need to install the Ansible software 
 on the machine that will serve as the `Ansible control node`.
@@ -25,7 +25,7 @@ sudo apt install ansible
 Your Ansible control node now has all of the software required to administer your hosts. Next, we will go over how 
 to add your hosts to the control node’s inventory file so that it can control them.
 
-## Step 2  Setting Up the Inventory File
+## 2  Setting Up the Inventory File
 
 The **inventory file** contains information about the hosts you’ll manage with Ansible. You can include 
 anywhere from one to several hundred servers in your inventory file, and hosts can be organized into groups and 
@@ -64,8 +64,14 @@ ansible_python_interpreter=/usr/bin/python3
 
 > The group name can't contain special character such as - * &
 
+When you finish editing the `/etc/ansible/hosts`, you can check the server lists in the inventory with the below command
 
-## Step 3  Testing Connection
+```shell
+ansible-inventory --list -y
+```
+
+
+## 3  Testing Connection
 
 Now we can test our ansible setup. The below command will use a built-in module `ping` to run a connectivity test on 
 all nodes from your `default inventory (/etc/ansible/hosts)`, it will test:
@@ -90,7 +96,7 @@ ansible all -m ping -u pliu --connection-password-file=/etc/ansible/sudo_pass.tx
 ```
 
 
-## Step 4  Running Ad-Hoc Commands (Optional)
+## 4  Running Ad-Hoc Commands (Optional)
 
 After confirming that your `Ansible control node` is able to communicate with your hosts, you can start running ad-hoc commands and playbooks on your servers.
 
@@ -114,14 +120,47 @@ ansible all -m apt -a "name=htop state=latest" -u pliu --connection-password-fil
 
 **Most modules of Ansible are idempotent, which implies that the changes are applied only if needed.**   
 
-## Step 5. Run a simple ansible playbook
+## 5. Ansible playbook
 
 `Ansible Playbooks` are the simplest way in Ansible to automate repeating tasks in the form of reusable and 
 consistent configuration files. `Playbooks are scripts defined in YAML files and contain any ordered set of steps to 
 be executed on our managed nodes`.
 
+Below is an all-in-one playbook, which means all tasks and configuration are located in a single yaml file (not recommended
+for complex tasks).
+
+It defines:
+- playbook name
+- on which host this play book will be run
+- a list of variables
+- a list of tasks
+```yaml
+- name: Grant sudo privilege to exiting user
+  hosts: all
+  vars:
+      pckname: vim
+      state: latest
+
+  tasks:
+  - name: Upgrade all apt packages
+    apt:
+      force_apt_get: yes
+      upgrade: dist
+    become: yes
+    become_user: root
+    become_method: sudo
+  - name: Install the {{ state }} of package "{{ pckname }}"
+    apt:
+      name: "{{ pckname }}"
+      state: "{{ state }}"
+```
+
 ```shell
-ansible-playbook grant_sudo_playbook.yml -u pliu --connection-password-file=/etc/ansible/sudo_pass.txt
+ansible-playbook demo_playbook.yml -u pliu --connection-password-file=/etc/ansible/sudo_pass.txt
 
 ansible-playbook site.yml -u pliu --connection-password-file=/etc/ansible/sudo_pass.txt
 ```
+
+
+## 6. Ansible Roles
+
