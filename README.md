@@ -27,7 +27,7 @@ sudo apt install ansible
 ```
 
 
-Your Ansible control node now has all of the software required to administer your hosts. Next, we will go over how 
+Your Ansible control node now has all the software required to administer your hosts. Next, we will go over how 
 to add your hosts to the control node’s inventory file so that it can control them.
 
 ## 2  Setting Up the Inventory File
