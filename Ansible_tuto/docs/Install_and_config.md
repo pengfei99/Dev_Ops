@@ -164,3 +164,17 @@ ansible-playbook site.yml -u pliu --connection-password-file=/etc/ansible/sudo_p
 
 ## 6. Ansible Roles
 
+An ansible role is a directory which contains a set of subdirectories. Inside each subdirectory, files are grouped 
+together according to their function. `A role must include at least one of these standard directories and can 
+omit any that isn’t actively used.`
+
+
+To create a well-defined `role directory structure skeleton`, we can leverage the command 
+**ansible-galaxy init <your_role_name>**. The ansible-galaxy command comes bundled with Ansible, so there is no 
+need to install extra packages.
+
+```shell
+# Suppose we want to create a role which add ldap-pam support for ssh 
+ansible-galaxy init install_ssh_pam_ldap
+```
+
