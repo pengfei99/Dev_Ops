@@ -1,0 +1,10 @@
+---
+# tasks file for install and configure ldap client
+# install_ssh_pam_ldap
+- name: Install the openldap client and required Packages for Ubuntu
+  apt:
+    name: "{{ openldap_client_pkgs }}"
+    state: present
+    update_cache: true
+  with_items:
+    -
